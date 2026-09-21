@@ -47,9 +47,11 @@ var (
 
 // Floor builds the one list of places for a home directory: the system
 // locations and the home directory itself, the credential directories and
-// files, and the agent-control directories. An empty home is ErrNoHome.
+// files, and the agent-control directories. An empty or relative home is
+// ErrNoHome: a relative one would put the floor under the working directory
+// and leave the real one unguarded.
 func Floor(home string) ([]Place, error) {
-	if strings.TrimSpace(home) == "" {
+	if strings.TrimSpace(home) == "" || !filepath.IsAbs(home) {
 		return nil, ErrNoHome
 	}
 	home = filepath.Clean(home)

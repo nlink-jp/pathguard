@@ -3,7 +3,6 @@ package pathguard
 import (
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Kind says what a Place is, so a caller can choose places by what they are
@@ -58,8 +57,16 @@ func ServerDir(path, note string) Place {
 func Check(places []Place, paths ...string) (reason, why string) {
 	views, ok := viewsOf(paths)
 	if !ok {
-		return "unresolvable_path", "a chain of links on the path does not end, or a link on it cannot be read"
+		return unresolvable()
 	}
+	return checkViews(places, views)
+}
+
+func unresolvable() (reason, why string) {
+	return "unresolvable_path", "a chain of links on the path does not end, or a link on it cannot be read"
+}
+
+func checkViews(places []Place, views []view) (reason, why string) {
 	for _, pl := range prepare(places) {
 		for _, v := range views {
 			if pl.holds(v) {
@@ -131,6 +138,41 @@ func prepare(places []Place) []prepared {
 			p.info = fi
 		}
 		out = append(out, p)
+		out = append(out, linkTargets(p)...)
+	}
+	return out
+}
+
+// linkTargets protects where the links directly inside a place lead. A link's
+// own location is inside the place and already protected; its target need not
+// be. On the machine that found it, ~/.ssh/config links into a sync folder,
+// and the sync folder's copy — the same bytes — was readable by naming it.
+// Only a place's own entries are read, one directory per place per check;
+// links deeper inside are not followed (a documented limit). System places are
+// skipped: their links lead to more system files, and /usr is large.
+func linkTargets(p prepared) []prepared {
+	if p.Kind == System || p.Exact || p.info == nil || !p.info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(p.Path)
+	if err != nil {
+		return nil
+	}
+	var out []prepared
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		at := filepath.Join(p.Path, e.Name())
+		fi, err := os.Stat(at)
+		if err != nil {
+			continue
+		}
+		t := prepared{Place: p.Place, info: fi}
+		if r, err := filepath.EvalSymlinks(at); err == nil {
+			t.spellings = []string{filepath.Clean(r)}
+		}
+		out = append(out, t)
 	}
 	return out
 }
@@ -141,7 +183,7 @@ func (pl prepared) holds(v view) bool {
 			return true
 		}
 		for _, s := range pl.spellings {
-			if strings.EqualFold(v.path, s) {
+			if sameName(v.path, s) {
 				return true
 			}
 		}
@@ -160,15 +202,4 @@ func (pl prepared) holds(v view) bool {
 		}
 	}
 	return false
-}
-
-// withinFold reports whether path is root or lies under it, ignoring case: a
-// sibling that merely shares the prefix (/data-evil against /data) is not
-// inside.
-func withinFold(path, root string) bool {
-	if strings.EqualFold(path, root) {
-		return true
-	}
-	r := strings.TrimSuffix(root, string(filepath.Separator)) + string(filepath.Separator)
-	return len(path) > len(r) && strings.EqualFold(path[:len(r)], r)
 }

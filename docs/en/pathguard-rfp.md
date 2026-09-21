@@ -1,6 +1,6 @@
 # RFP: pathguard — one judgement of whether a path may be touched
 
-- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies)
+- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies); implementation reviewed independently the same day, findings folded in (§ "What the implementation review changed")
 - Date: 2026-09-22
 - Series: lib-series
 - Amends (on acceptance): organization ADR-021 §4, §7 and §10, through a new organization ADR-022
@@ -101,8 +101,14 @@ type Place struct {
 // way (p with its links replaced one hop at a time), and the final path.
 func Forms(p string) []string
 
-// Floor builds the one list for a home directory. An empty home is an error:
-// the caller refuses rather than checking nothing.
+// ServerDir is the Place for a server's own directory (reason "server_dir").
+func ServerDir(path, note string) Place
+
+// Check reports the first place any form of any of paths lies in.
+func Check(places []Place, paths ...string) (reason, why string)
+
+// Floor builds the one list for a home directory. An empty or relative home is
+// ErrNoHome: the caller refuses rather than checking nothing.
 func Floor(home string) ([]Place, error)
 
 // A Policy judges file paths; Local and Outbound are the two there are.
@@ -136,7 +142,14 @@ func (r Resolver) Resolve(arg string, meta map[string]json.RawMessage) (string, 
 func (r Resolver) Validate(dir string) (string, error)
 func (r Resolver) LocalPath(raw, resolved string) (reason, why string)    // Local + Protected
 func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Outbound + Protected
+
+// For call sites that hold no Resolver (voice-scribe's transcribe today): the
+// policy is built from this process's home; an unknown home refuses.
+func Sensitive(paths ...string) string
+func SensitiveOutbound(paths ...string) string
 ```
+
+`work_dir_denied` carries `details` `{work_dir, resolved, reason}`.
 
 The eight copies' messages are kept word for word; `RequiredHint` carries each
 server's one sentence. slack-mcp-extender moves to the shared order and wording.
@@ -155,7 +168,9 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    `~/.netrc`. The name comparison, case-folded, covers a place that does not
    exist yet and a filesystem whose inode numbers cannot be trusted (macFUSE
    without `use_ino`, smbfs), where identity alone would be weaker than today.
-   Folding over-refuses on a case-sensitive disk; a floor may.
+   Names are folded the way APFS folds them — Unicode case folding with its
+   one-to-many expansions, not ASCII lowercase. Folding over-refuses on a
+   case-sensitive disk; a floor may.
 3. **Exact places match the form itself, never its ancestors** — otherwise every
    temporary directory is refused.
 4. **Home comes from the caller, by identity.** The runtimes' `homePrefixRe`
@@ -164,7 +179,8 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    identity replaces it: the policies protect the home directory of the account
    the server runs as, and no longer another user's `.claude` as a name.
 5. **An unknown home refuses.** Today's check returns "" when the home directory
-   cannot be found — it passes everything. `Floor("")` is an error and the
+   cannot be found — it passes everything. `Floor("")` is an error, and so is a
+   relative home (it would put the floor under the working directory); the
    resolver refuses every call, saying why.
 6. **Cost is bounded per call, nothing is cached.** Each place is `Stat`ed once,
    each form's ancestors walked once, comparisons done in memory. A cache would
@@ -173,6 +189,33 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    third-party dependencies (reworded to allow nlink-jp modules, per the
    operator, 2026-09-22); the module keeps the promise with a test that its
    `go.mod` has no `require`.
+
+### What the implementation review changed
+
+An independent review of the implementation, before release, found five holes
+and a set of test gaps. Each fix has a test that fails without it.
+
+- **Unicode folding.** `strings.ToLower` let `id_rſa` (U+017F) through; on APFS
+  it opens `id_rsa`. Measured on the disk: `ſ` = `s`, the Kelvin sign = `k`,
+  `ﬆ` and `ﬅ` = `st`, `ß` = `ss`. The comparison key is now the smallest member
+  of each rune's simple-folding orbit, after the full foldings (`ß`, `ẞ`, the
+  Latin ligatures); a test checks every pair against the disk it runs on.
+- **Link targets.** A link's own location inside a place was protected, its
+  target was not: the sync folder's copy of `~/.ssh/config` could be read by
+  naming it. The targets of the links directly inside a non-system directory
+  place are now places too — one level, a stated limit.
+- **`..` after a missing component** (`work/missing/../link`) was joined by
+  name, and a link in the part that exists was not followed. The cleaned
+  remainder is now resolved again.
+- **A relative home** built a floor under the working directory. It is now
+  `ErrNoHome`.
+- **A call site without a `Resolver`** (voice-scribe's transcribe calls
+  `workdir.Sensitive`) had no module function to move to; `Sensitive` and
+  `SensitiveOutbound` fail closed on an unknown home.
+- **Windows** (the servers also build there): a relative path is made absolute
+  with `filepath.Abs`, since Windows applies `..` by name and has
+  volume-relative forms; the name comparison drops the trailing dots and spaces
+  Windows ignores.
 
 ### What changes for the servers (each CHANGELOG says it)
 
@@ -199,6 +242,10 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
   legitimate path; there the name comparison is what protects.
 - Unicode normalisation is handled for existing places (by identity), not for a
   place that does not exist yet under a non-ASCII home.
+- Only the links directly inside a place are followed to their targets; a
+  link deeper inside protects its own location, not where it leads.
+- Another user's `.claude`, `.gemini` and `.codex` are not protected (decision
+  4); the fixture records this as an intended difference from the runtimes.
 
 ### Keeping the runtimes' list and this one together
 

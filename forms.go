@@ -3,6 +3,7 @@ package pathguard
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -49,7 +50,7 @@ func forms(p string) (out []string, ok bool) {
 		if !r.ok {
 			return out, false
 		}
-		if r.link == "" {
+		if r.link == "" && !r.again {
 			add(r.final)
 			return out, true
 		}
@@ -61,9 +62,16 @@ func forms(p string) (out []string, ok bool) {
 
 // absolute joins a relative path onto the working directory without cleaning
 // it, so a ".." in it is resolved against real directories by step, not
-// cancelled by name.
+// cancelled by name. Windows applies ".." by name and has volume-relative
+// forms (\Users, C:foo), so there filepath.Abs is what the system does.
 func absolute(p string) string {
 	if filepath.IsAbs(p) {
+		return p
+	}
+	if runtime.GOOS == "windows" {
+		if a, err := filepath.Abs(p); err == nil {
+			return a
+		}
 		return p
 	}
 	wd, err := os.Getwd()
@@ -77,6 +85,7 @@ type stepResult struct {
 	link  string // the first link met: its own location
 	next  string // p with that link replaced by its target, not yet cleaned
 	final string // when there is no link: the resolved path
+	again bool   // next is to be walked again (a ".." after a missing component)
 	ok    bool
 }
 
@@ -102,7 +111,17 @@ func step(p string) stepResult {
 		cand := filepath.Join(walked, comp)
 		fi, err := os.Lstat(cand)
 		if err != nil {
-			return stepResult{final: filepath.Clean(filepath.Join(append([]string{cand}, parts[i+1:]...)...)), ok: true}
+			rest := filepath.Clean(filepath.Join(append([]string{cand}, parts[i+1:]...)...))
+			// A ".." after the missing component climbs back into what exists,
+			// and a link there would be missed if the rest were joined by name.
+			// Resolve the cleaned remainder again: it is what Windows opens (it
+			// applies ".." by name), and on Unix the open fails anyway.
+			for _, later := range parts[i+1:] {
+				if later == ".." {
+					return stepResult{next: rest, again: true, ok: true}
+				}
+			}
+			return stepResult{final: rest, ok: true}
 		}
 		if fi.Mode()&os.ModeSymlink == 0 {
 			walked = cand

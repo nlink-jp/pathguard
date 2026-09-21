@@ -18,5 +18,11 @@ to [Semantic Versioning](https://semver.org/).
 - `pathguard/workdir`: organization ADR-021 on top — `NewResolver`, `Resolve`
   (argument, else `_meta["jp.nlink/work_dir"]`), `Validate` (the closed list of
   checks), `LocalPath`, `OutboundPath`, and the fleet's error codes.
+- `workdir.Sensitive` / `workdir.SensitiveOutbound` for call sites that hold no
+  `Resolver`; `work_dir_denied` carries `details.reason`.
+- Names are compared by Unicode case folding as APFS applies it (`id_rſa` is
+  `id_rsa`), not by ASCII lowercase; the targets of the links directly inside a
+  protected directory are protected too; a `..` after a missing component is
+  resolved against what exists; an empty or relative home refuses everything.
 - Replaces the nine per-server copies of `internal/workdir`, which compared
   locations by name on a case-insensitive disk.

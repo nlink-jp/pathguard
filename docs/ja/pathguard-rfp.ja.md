@@ -1,6 +1,6 @@
 # RFP: pathguard — パスに触れてよいかの判定を 1 つに
 
-- Status: 承認済み（2026-09-22）— 独立の設計レビュー 2 回と、運用者の 2026-09-22 の判断（1 モジュールに 2 層・ランタイムは後で・手元と外送りで方針を分ける）を受けて改訂
+- Status: 承認済み（2026-09-22）— 独立の設計レビュー 2 回と、運用者の 2026-09-22 の判断（1 モジュールに 2 層・ランタイムは後で・手元と外送りで方針を分ける）を受けて改訂。同日に実装の独立レビューを受け、指摘を反映（「実装レビューで変わったこと」の節）
 - Date: 2026-09-22
 - Series: lib-series
 - 改める対象（了承後）: 組織 ADR-021 の §4・§7・§10。新しい組織 ADR-022 によって
@@ -85,8 +85,14 @@ type Place struct {
 // 置き換えたもの）、最後のパス。
 func Forms(p string) []string
 
-// Floor はホームディレクトリに対する一覧を 1 つ作る。ホームが空ならエラーで、
-// 呼び出し側は何も調べない代わりに拒む。
+// ServerDir はサーバー自身のディレクトリを表す Place（reason は "server_dir"）。
+func ServerDir(path, note string) Place
+
+// Check は、paths のどれかのどれかの形が入っている最初の場所を返す。
+func Check(places []Place, paths ...string) (reason, why string)
+
+// Floor はホームディレクトリに対する一覧を 1 つ作る。ホームが空か相対パスなら
+// ErrNoHome で、呼び出し側は何も調べない代わりに拒む。
 func Floor(home string) ([]Place, error)
 
 // Policy はファイルのパスを判定する。Local と Outbound の 2 つだけがある。
@@ -119,7 +125,14 @@ func (r Resolver) Resolve(arg string, meta map[string]json.RawMessage) (string, 
 func (r Resolver) Validate(dir string) (string, error)
 func (r Resolver) LocalPath(raw, resolved string) (reason, why string)    // Local + Protected
 func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Outbound + Protected
+
+// Resolver を持たない呼び出し箇所（今は voice-scribe の transcribe）向け。方針は
+// このプロセスのホームから作り、ホームが分からなければ拒む。
+func Sensitive(paths ...string) string
+func SensitiveOutbound(paths ...string) string
 ```
+
+`work_dir_denied` は `details` に `{work_dir, resolved, reason}` を持つ。
 
 8 本のコピーの文言はそのまま残し、`RequiredHint` が各サーバーの 1 文を運ぶ。slack-mcp-extender は共通の順序と
 文言に移る。
@@ -134,7 +147,9 @@ func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Out
    存在する場所のあらゆる綴り —— 大文字小文字、リンク、正規化、`~/.netrc` のようなファイルの項目への
    ハードリンク —— を捕まえる。大文字小文字を同一視した名前の比較は、まだ存在しない場所と、実体の番号を
    信用できないファイルシステム（`use_ino` の無い macFUSE、smbfs）を覆う。そこでは実体だけにすると今より
-   弱くなる。同一視は区別するディスクで拒みすぎるが、床としてはそれでよい。
+   弱くなる。名前は APFS と同じやり方で同一視する —— ASCII の小文字化ではなく、1 文字が複数文字に展開される
+   ものも含めた Unicode のケースフォールディング。同一視は区別するディスクで拒みすぎるが、床としてはそれで
+   よい。
 3. **その場所そのものだけの項目は、形そのものとだけ比べ、上の階層とは比べない** —— そうしないと、すべての
    一時ディレクトリを拒む。
 4. **ホームは呼び出し側から受け取り、実体で比べる。** ランタイムの `homePrefixRe`（名前で `/users/…`、
@@ -142,12 +157,35 @@ func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Out
    ホームに当たる。`Floor(home)` と実体の比較がそれに代わる。方針が守るのは、サーバーを動かしている
    アカウントのホームで、ほかの利用者の `.claude` を名前で守ることはなくなる。
 5. **ホームが分からなければ拒む。** 今の検査はホームが見つからないと "" を返す —— すべてを通す。
-   `Floor("")` はエラーで、検査器は理由を添えてすべての呼び出しを拒む。
+   `Floor("")` はエラーで、相対パスのホームもエラーにする（床が作業ディレクトリの下にできてしまう）。検査器は
+   理由を添えてすべての呼び出しを拒む。
 6. **費用は 1 回の呼び出しで有界、何もキャッシュしない。** 各場所を 1 回 `Stat` し、各形の上の階層を 1 回
    たどり、比較はメモリ上で行う。キャッシュは、作った後に現れた場所を見落とす。
 7. **標準ライブラリだけで書き、テストで固定する。** 利用側の 2 本は第三者の依存を持たないと約束している
    （運用者の判断〔2026-09-22〕に従い、nlink-jp のモジュールは可と読める文言に改める）。モジュールは、
    自分の `go.mod` に `require` が無いことを確かめるテストでその約束を守る。
+
+### 実装レビューで変わったこと
+
+公開前の実装の独立レビューで、穴が 5 つとテストの不足が見つかった。どの修正にも、修正が無ければ落ちる
+テストがある。
+
+- **Unicode の同一視。** `strings.ToLower` は `id_rſa`（U+017F）を通していた。APFS ではこれで `id_rsa` が
+  開く。ディスクで実測: `ſ` = `s`、ケルビン記号 = `k`、`ﬆ` と `ﬅ` = `st`、`ß` = `ss`。比較の鍵は、1 対多の
+  フォールディング（`ß`、`ẞ`、ラテン文字の合字）を先に展開し、各文字を単純フォールディングの輪の最小の文字に
+  置き換えたものになった。テストが、動いているディスクに対してすべての組を確かめる。
+- **リンクの行き先。** 場所の中にあるリンク自身の位置は守られていたが、行き先は守られていなかった ——
+  `~/.ssh/config` の同期フォルダ側の写しは、その名前で渡せば読めた。システム以外のディレクトリの場所の
+  直下にあるリンクの行き先も、場所として加えるようにした —— 1 段だけで、これは明記した限界である。
+- **存在しない部分の後の `..`**（`work/missing/../link`）は名前でつないでおり、存在する側にあるリンクを
+  たどっていなかった。整えた残りをもう一度解決するようにした。
+- **相対パスのホーム**は、作業ディレクトリの下に床を作っていた。`ErrNoHome` にした。
+- **`Resolver` を持たない呼び出し箇所**（voice-scribe の transcribe は `workdir.Sensitive` を呼ぶ）には、
+  移る先のモジュールの関数が無かった。`Sensitive` と `SensitiveOutbound` を加え、ホームが分からなければ
+  拒むようにした。
+- **Windows**（サーバーはそこでもビルドされる）: Windows は `..` を名前で処理し、ボリューム相対の形もある
+  ので、相対パスは `filepath.Abs` で絶対パスにする。名前の比較では、Windows が無視する末尾の `.` と空白を
+  落とす。
 
 ### サーバーで変わること（各サーバーの変更履歴に書く）
 
@@ -170,6 +208,10 @@ func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Out
   なるのは名前の比較である。
 - Unicode の正規化は、存在する場所については（実体の比較で）扱い、非 ASCII のホームの下のまだ存在しない
   場所については扱わない。
+- 行き先までたどるのは、場所の直下にあるリンクだけ。もっと深いところのリンクは、リンク自身の位置は守られる
+  が、行き先は守られない。
+- ほかの利用者の `.claude`・`.gemini`・`.codex` は守らない（判断 4）。写しのファイルは、これをランタイムとの
+  意図した違いとして記録している。
 
 ### ランタイムの一覧とこの一覧をそろえておく
 

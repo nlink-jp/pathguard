@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -439,5 +440,149 @@ func TestAFirmlinkSpellingIsRefused(t *testing.T) {
 	}
 	if reason, _ := local.Check(firm); reason != "sensitive_path" {
 		t.Errorf("Local.Check(%q) reason = %q, want sensitive_path", firm, reason)
+	}
+}
+
+// The filesystem folds case by Unicode, not by ASCII: on APFS "ſ" names "s",
+// the Kelvin sign names "k", and the ligatures "ﬆ", "ﬅ" name "st" (measured,
+// 2026-09-22). The key must agree with the disk wherever the disk equates.
+func TestFoldAgreesWithTheUnicodeFoldsTheDiskApplies(t *testing.T) {
+	pairs := []struct{ variant, ascii string }{
+		{"id_rſa", "id_rsa"},              // ſ
+		{".Kube", ".kube"},                // Kelvin sign
+		{".zsh_hiﬆory", ".zsh_history"},   // ﬆ
+		{".bash_hiﬅory", ".bash_history"}, // ﬅ
+		{"glaß", "glass"},                 // ß
+	}
+	for _, p := range pairs {
+		if fold(p.variant) != fold(p.ascii) {
+			t.Errorf("fold(%q) != fold(%q)", p.variant, p.ascii)
+		}
+	}
+	if fold("Σ") != fold("ς") || fold("K") != fold("k") {
+		t.Error("simple folds are not equated")
+	}
+	dir := realTemp(t)
+	if !caseInsensitive(t, dir) {
+		t.Skip("case-sensitive filesystem: the disk equates nothing here")
+	}
+	out, err := Outbound(realTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pairs {
+		write(t, filepath.Join(dir, p.ascii))
+		if _, err := os.Stat(filepath.Join(dir, p.variant)); err != nil {
+			t.Logf("this disk does not equate %q with %q", p.variant, p.ascii)
+			continue
+		}
+		// The disk opens the ASCII file under the variant name; the rule must
+		// refuse the variant as it refuses the name.
+		if _, asciiWhy := out.Check(filepath.Join(dir, p.ascii)); asciiWhy != "" {
+			if _, why := out.Check(filepath.Join(dir, p.variant)); why == "" {
+				t.Errorf("Outbound refuses %q but passes %q, which the disk opens as the same file", p.ascii, p.variant)
+			}
+		}
+	}
+}
+
+// A link directly inside a floor directory protects its target too: named
+// directly, the sync folder's copy of ~/.ssh/config is the same bytes.
+func TestTheTargetOfALinkInsideAFloorDirectoryIsProtected(t *testing.T) {
+	home := realTemp(t)
+	mkdir(t, filepath.Join(home, ".ssh"))
+	synced := filepath.Join(realTemp(t), "sync", "config")
+	write(t, synced)
+	link(t, synced, filepath.Join(home, ".ssh", "config"))
+	local, err := Local(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, _ := local.Check(synced); reason != "sensitive_path" {
+		t.Errorf("the target named directly: reason = %q, want sensitive_path", reason)
+	}
+}
+
+// A ".." after a missing component climbs back into what exists; a link there
+// must still be followed.
+func TestALinkAfterAMissingComponentAndDotDotIsFollowed(t *testing.T) {
+	home := realTemp(t)
+	keys := filepath.Join(home, ".ssh", "authorized_keys")
+	write(t, keys)
+	base := realTemp(t)
+	link(t, keys, filepath.Join(base, "x"))
+	local, err := Local(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, _ := local.Check(base + "/missing/../x"); reason != "sensitive_path" {
+		t.Errorf("reason = %q, want sensitive_path", reason)
+	}
+}
+
+func TestARelativeHomeIsNoHome(t *testing.T) {
+	if _, err := Floor("me"); err != ErrNoHome {
+		t.Errorf("Floor(\"me\") err = %v", err)
+	}
+	if _, err := Local("me"); err != ErrNoHome {
+		t.Errorf("Local(\"me\") err = %v", err)
+	}
+}
+
+// A relative input is resolved against the working directory, links and all.
+func TestARelativePathIsResolvedFromTheWorkingDirectory(t *testing.T) {
+	home := realTemp(t)
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	write(t, key)
+	wd := realTemp(t)
+	link(t, key, filepath.Join(wd, "x"))
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(wd); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(prev) }()
+	if reason, _ := Check(floorOf(t, home), "x"); reason != "sensitive_path" {
+		t.Errorf("relative link: reason = %q, want sensitive_path", reason)
+	}
+}
+
+// SecretName agrees with the runtimes' regular expression on every name it
+// lists, and on names that only look similar; the committed .env templates are
+// the runtimes' separate re-allow.
+func TestSecretNameAgreesWithTheRuntimesExpression(t *testing.T) {
+	re := regexp.MustCompile(`(^|/)` + loadRuntimeLists(t).CredentialNames + `$`)
+	for _, name := range []string{
+		"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials.json", ".credentials.json",
+		"application_default_credentials.json", "service-account.json", "my-service-account-key.json",
+		"service-accounts.json", ".env", ".env.production", ".env.example",
+		"id_rsa.pub", "xid_rsa", "credentials.jsonx", "service-account.txt", "environment.csv",
+	} {
+		want := re.MatchString(name) && envTemplates[name] == false
+		if got := SecretName(name); got != want {
+			t.Errorf("SecretName(%q) = %v, the runtimes' rule says %v", name, got, want)
+		}
+	}
+}
+
+// The wording is the fleet's: agents learned it.
+func TestTheFloorSpeaksTheFleetsWords(t *testing.T) {
+	home := realTemp(t)
+	floor := floorOf(t, home)
+	for p, want := range map[string]string{
+		"/":                              "it is a system directory",
+		"/usr/bin":                       "it is inside the system directory /usr",
+		home:                             "it is the home directory itself; pass a directory inside it",
+		filepath.Join(home, ".ssh", "x"): "~/.ssh holds credentials or agent control files",
+		filepath.Join(home, ".config", "gem-agent", "x"): "~/.config/gem-agent holds credentials or agent control files",
+	} {
+		if _, why := Check(floor, p); why != want {
+			t.Errorf("Check(%q) = %q, want %q", p, why, want)
+		}
+	}
+	if got := ServerDir("/srv/own", "").Why; got != "it is inside this server's own directory /srv/own" {
+		t.Errorf("ServerDir wording: %q", got)
 	}
 }

@@ -287,3 +287,47 @@ func TestLocalAndOutboundPathsDiffer(t *testing.T) {
 		t.Error("LocalPath passed the real ~/.ssh/id_rsa")
 	}
 }
+
+func TestAWorkDirNamedLikeAnEnvFileIsRefused(t *testing.T) {
+	r, _ := resolver(t)
+	dir := filepath.Join(realTemp(t), ".env")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Validate(dir)
+	var e *Error
+	if !errors.As(err, &e) || e.Code != CodeDenied || e.Details["reason"] != "sensitive_path" {
+		t.Errorf("Validate(.env dir) = %v", err)
+	}
+}
+
+// Sensitive and SensitiveOutbound are for call sites without a Resolver: the
+// OS home, the Local or Outbound policy, and a refusal when the home is not
+// known.
+func TestSensitiveUsesTheProcessHomeAndFailsClosed(t *testing.T) {
+	home := realTemp(t)
+	t.Setenv("HOME", home)
+	evidence := filepath.Join(realTemp(t), "evidence", "home", "bob", ".bash_history")
+	if err := os.MkdirAll(filepath.Dir(evidence), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidence, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if why := Sensitive(filepath.Join(home, ".ssh", "id_rsa")); why == "" {
+		t.Error("Sensitive passed the real ~/.ssh/id_rsa")
+	}
+	if why := Sensitive(evidence); why != "" {
+		t.Errorf("Sensitive refused the evidence copy: %s", why)
+	}
+	if why := SensitiveOutbound(evidence); why == "" {
+		t.Error("SensitiveOutbound would send the evidence copy")
+	}
+	t.Setenv("HOME", "")
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		t.Skipf("the home directory is still known here: %q", h)
+	}
+	if why := Sensitive("/srv/data/report.pdf"); !strings.Contains(why, "home directory") {
+		t.Errorf("an unknown home: Sensitive = %q, want a refusal naming the home directory", why)
+	}
+}

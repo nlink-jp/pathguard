@@ -40,6 +40,7 @@ dir, err := r.Resolve(args.WorkDir, requestMeta) // argument, else _meta["jp.nli
 var e *workdir.Error
 if errors.As(err, &e) {
     // e.Code is work_dir_required / _invalid / _not_found / _not_writable / _denied
+    // e.Details on work_dir_denied: {"work_dir", "resolved", "reason"}
 }
 ```
 
@@ -55,6 +56,14 @@ if reason, why := r.LocalPath(raw, resolved); why != "" { /* refuse with reason 
 
 // Sending it off the machine (an upload):
 if reason, why := r.OutboundPath(raw, resolved); why != "" { /* refuse */ }
+```
+
+A call site that holds no `Resolver` uses the package functions, which build
+the policy from this process's home directory (an unknown home refuses):
+
+```go
+if why := workdir.Sensitive(raw, resolved); why != "" { /* refuse */ }         // Local
+if why := workdir.SensitiveOutbound(raw, resolved); why != "" { /* refuse */ } // Outbound
 ```
 
 ## The two file policies
@@ -80,17 +89,35 @@ System locations refuse a work directory, not a file.
 - **Identity and name, always both.** Identity (`os.SameFile` against the form
   and each existing directory above it) catches every spelling of a place that
   exists — case, links, firmlinks, a hard link to a file such as `~/.netrc`. The
-  name comparison, case-folded, covers a place that does not exist yet and a
-  filesystem whose inode numbers cannot be trusted.
+  name comparison covers a place that does not exist yet and a filesystem whose
+  inode numbers cannot be trusted.
+- **Names are folded the way the disk folds them.** APFS matches names by
+  Unicode case folding, not ASCII lowercase: `id_rſa` opens `id_rsa`, the Kelvin
+  sign opens `k`, `.ﬆ` opens `.st`. The name comparison folds the same way,
+  including the expansions `ß` → `ss` and the Latin ligatures.
+- **Where a place's links lead is protected too.** If `~/.ssh/config` is a link
+  into a sync folder, the file it points at is refused under its own name.
 - **Exact places match only themselves.** `/`, `/private/var` and the home
   directory refuse a work directory that *is* them, not everything below them.
 
 ## Limits
 
-This is a floor, not a boundary. A hard link to a file inside a credential
-directory under another name, or a copy of a secret, is not detected by the
-Local policy. On a filesystem with unstable inode numbers, identity can collide
-and refuse a legitimate path.
+This is a floor, not a boundary.
+
+- A hard link to a file inside a credential directory under another name, or a
+  copy of a secret, is not detected by the Local policy.
+- Only the links directly inside a place are followed to their targets; a link
+  deeper inside (`~/.ssh/keys/work → …`) protects its own location, not where it
+  leads.
+- Only the home directory of the account the server runs as is protected as a
+  place. Another user's `.claude`, `.gemini` and `.codex` are ordinary
+  directories to both policies (gem-agent and lagent refuse them by name in any
+  home); the Outbound policy still refuses another user's `.ssh`, `.aws` and the
+  rest by name.
+- On a filesystem with unstable inode numbers, identity can collide and refuse a
+  legitimate path. Unicode normalisation (`é` composed or decomposed) is
+  matched by identity only, so not for a place that does not exist yet.
+- An empty or relative home is treated as unknown and refuses everything.
 
 ## Documentation
 

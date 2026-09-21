@@ -56,10 +56,13 @@ func (p Policy) Check(paths ...string) (reason, why string) {
 	if !p.built {
 		return "unconfigured", "the path check was not set up (pathguard.Local or pathguard.Outbound)"
 	}
-	if reason, why := Check(p.places, paths...); why != "" {
+	views, ok := viewsOf(paths)
+	if !ok {
+		return unresolvable()
+	}
+	if reason, why := checkViews(p.places, views); why != "" {
 		return reason, why
 	}
-	views, _ := viewsOf(paths)
 	for _, v := range views {
 		if EnvFile(filepath.Base(v.path)) {
 			return "sensitive_path", "a .env file holds credentials"

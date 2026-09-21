@@ -22,13 +22,15 @@ No Makefile — this is a library, not a binary.
 ```
 pathguard/
 ├── forms.go        # Forms: resolve a path one link at a time; every hop is a form
-├── place.go        # Place, Kind, ServerDir, Check (identity + case-folded name)
+├── place.go        # Place, Kind, ServerDir, Check (identity + folded name), link targets
+├── fold.go         # fold/foldPath: Unicode case folding as APFS applies it
 ├── floor.go        # the one list (Floor), ErrNoHome
 ├── names.go        # EnvFile, SecretName, CredentialSegment (name rules)
 ├── policy.go       # Local and Outbound file policies
 ├── pathguard_test.go
 ├── testdata/runtime-lists.json   # copy of gem-agent/lagent's list + outbound verdicts
-├── workdir/        # ADR-021: Resolver, NewResolver, Resolve/Validate, Local/OutboundPath
+├── workdir/        # ADR-021: Resolver, NewResolver, Resolve/Validate, Local/OutboundPath,
+│                   #   Sensitive/SensitiveOutbound (no Resolver at hand)
 └── docs/{en,ja}/   # RFP
 ```
 
@@ -45,9 +47,20 @@ pathguard/
 - **`.` and `..` are applied to the part already walked**, which holds no link
   (`step`): `p2/../q` follows `p2` before climbing. Never `filepath.Clean` a
   path before resolving it.
+- **A ".." after a missing component is walked again** (`again` in `step`): it
+  climbs back into what exists, where a link may sit.
 - **Exact places match the form itself, never an ancestor.**
-- **An unknown home refuses; a zero `Policy` / `Resolver` refuses.** Failing open
-  here is how a floor silently disappears.
+- **Never compare names with `strings.ToLower` or `strings.EqualFold`.** APFS
+  folds by Unicode: `ſ` is `s`, the Kelvin sign is `k`, `ﬆ` is `st`, `ß` is
+  `ss` (measured 2026-09-22). Use `fold` / `foldPath`;
+  `TestFoldAgreesWithTheUnicodeFoldsTheDiskApplies` checks the pairs against
+  the disk it runs on.
+- **Link targets are protected one level deep.** `linkTargets` reads a
+  non-system directory place's own entries and adds each link's target as a
+  place; deeper links are a documented limit, not an oversight.
+- **An unknown or relative home refuses; a zero `Policy` / `Resolver` refuses;
+  `workdir.Sensitive` refuses when `os.UserHomeDir` fails.** Failing open here is
+  how a floor silently disappears.
 - **The credential list is the runtimes' list.** `testdata/runtime-lists.json`
   holds gem-agent's and lagent's `internal/sandbox/lane.go` lists; the tests hold
   this module to it and `check-org.sh` holds both runtimes to it. Change all

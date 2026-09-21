@@ -146,9 +146,9 @@ func (r Resolver) Validate(dir string) (string, error) {
 	if !fi.IsDir() {
 		return "", newErr(CodeNotFound, "work_dir %q is not a directory", dir)
 	}
-	if why := r.denied(dir, resolved); why != "" {
+	if reason, why := r.denied(dir, resolved); why != "" {
 		e := newErr(CodeDenied, "work_dir %q is refused: %s", dir, why)
-		e.Details = map[string]any{"work_dir": dir, "resolved": resolved}
+		e.Details = map[string]any{"work_dir": dir, "resolved": resolved, "reason": reason}
 		return "", e
 	}
 	if err := writable(resolved); err != nil {
@@ -157,20 +157,20 @@ func (r Resolver) Validate(dir string) (string, error) {
 	return resolved, nil
 }
 
-func (r Resolver) denied(dir, resolved string) string {
+func (r Resolver) denied(dir, resolved string) (reason, why string) {
 	if !r.built {
-		return "this server's work-directory check was not set up (workdir.NewResolver)"
+		return "unconfigured", "this server's work-directory check was not set up (workdir.NewResolver)"
 	}
 	if r.homeErr != nil {
-		return r.homeErr.Error()
+		return "home_unknown", r.homeErr.Error()
 	}
-	if _, why := pathguard.Check(r.places, dir, resolved); why != "" {
-		return why
+	if reason, why := pathguard.Check(r.places, dir, resolved); why != "" {
+		return reason, why
 	}
 	if pathguard.EnvFile(filepath.Base(dir)) || pathguard.EnvFile(filepath.Base(resolved)) {
-		return "a .env file holds credentials"
+		return "sensitive_path", "a .env file holds credentials"
 	}
-	return ""
+	return "", ""
 }
 
 // LocalPath reports why a file a call names may not be read or written on this
@@ -201,6 +201,38 @@ func (r Resolver) unusable() (reason, why string) {
 		return "home_unknown", r.homeErr.Error()
 	}
 	return "", ""
+}
+
+// Sensitive reports why a path may not be read or written on this machine —
+// the Local policy with this process's home directory — or "". It is for the
+// call sites that hold no Resolver; an unknown home refuses, with the reason.
+// Pass every spelling you have: as given, and resolved.
+func Sensitive(paths ...string) string {
+	p, err := policyFor(pathguard.Local)
+	if err != nil {
+		return err.Error()
+	}
+	_, why := p.Check(paths...)
+	return why
+}
+
+// SensitiveOutbound is Sensitive for a file that leaves the machine: the
+// Outbound policy.
+func SensitiveOutbound(paths ...string) string {
+	p, err := policyFor(pathguard.Outbound)
+	if err != nil {
+		return err.Error()
+	}
+	_, why := p.Check(paths...)
+	return why
+}
+
+func policyFor(build func(string, ...pathguard.Place) (pathguard.Policy, error)) (pathguard.Policy, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return pathguard.Policy{}, pathguard.ErrNoHome
+	}
+	return build(home)
 }
 
 // writable reports whether this process can create an entry in dir. It is a
