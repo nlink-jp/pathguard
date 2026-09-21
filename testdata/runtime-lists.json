@@ -1,0 +1,37 @@
+{
+  "_source": "gem-agent and lagent internal/sandbox/lane.go (the two lists are identical). check-org.sh compares both files with this copy.",
+  "credentialDirs": [
+    ".ssh", ".aws", ".kube", ".gnupg", ".config/gcloud", ".config/gh",
+    ".gemini", ".codex", ".claude", ".azure", ".terraform.d", "Library/Keychains",
+    ".config/mcp-bridge"
+  ],
+  "homeOnlyDirs": [".claude", ".gemini", ".codex"],
+  "credentialFiles": [
+    ".docker/config.json", ".git-credentials", ".bash_history", ".zsh_history",
+    ".netrc", ".npmrc", ".pypirc", ".vault-token", ".claude.json"
+  ],
+  "credentialNames": "(\\.env(\\.[^/]*)?|id_rsa|id_ed25519|id_ecdsa|id_dsa|\\.?credentials\\.json|[^/]*service-account[^/]*\\.json|application_default_credentials\\.json)",
+  "outboundVerdicts": [
+    {"path": "/srv/proj/.kube/config", "refused": true},
+    {"path": "/srv/sub/.docker/config.json", "refused": true},
+    {"path": "/srv/evidence/home/bob/.bash_history", "refused": true},
+    {"path": "/srv/evidence/home/bob/.ssh/authorized_keys", "refused": true},
+    {"path": "/srv/proj/.config/gcloud/credentials.db", "refused": true},
+    {"path": "/srv/keys/id_rsa", "refused": true},
+    {"path": "/srv/keys/ID_ED25519", "refused": true},
+    {"path": "/srv/export/service-accounts.json", "refused": true},
+    {"path": "/srv/app/credentials.json", "refused": true},
+    {"path": "/srv/app/.env", "refused": true},
+    {"path": "/srv/app/.env.production", "refused": true},
+    {"path": "/srv/app/.ENV", "refused": true},
+    {"path": "/srv/app/.env.example", "refused": false},
+    {"path": "/srv/app/.env.sample", "refused": false},
+    {"path": "/srv/app/.env.template", "refused": false},
+    {"path": "/srv/app/.env.dist", "refused": false},
+    {"path": "/srv/proj/.claude/skills/review/SKILL.md", "refused": false},
+    {"path": "/srv/proj/.codex/notes.md", "refused": false},
+    {"path": "/srv/app/environment.csv", "refused": false},
+    {"path": "/srv/data/report.pdf", "refused": false},
+    {"path": "/srv/data/ssh-notes.txt", "refused": false}
+  ]
+}
