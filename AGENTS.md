@@ -84,12 +84,13 @@ pathguard/
   `/.vol/<dev>/<ino>` does — measured), and the `/.vol` anchor would be lost.
   `ancestors`, `parent` and `child` are the linear substitutes for
   `filepath.Dir`/`Join`; `TestTheLinearWalksAgreeWithFilepath` pins them to the
-  same strings. Linearity itself is shown by the benchmarks, not a test. Every place's forms and ancestors are
-  looked up per call, and nothing is cached, on purpose. The agent controls the
-  path, so keep `look` linear: an anchor's `rest` is a shared slice, never
-  copied. A prepend per segment once made a 120 KB path cost 14 s, and
-  `TestLookingAtALongPathAllocatesLinearly` guards it. `maxPathBytes` is
-  `PATH_MAX` (4096) on Unix and 32 KiB on Windows.
+  same strings. Linearity itself is shown by the benchmarks, not a test.
+- **Nothing is cached, on purpose:** every place's forms and ancestors are
+  looked up per call. The agent controls the path, so keep `look` linear: an
+  anchor's `rest` is a shared slice, never copied. A prepend per segment once
+  made a 120 KB path cost 14 s, and `TestLookingAtALongPathAllocatesLinearly`
+  guards it. `maxPathBytes` is `PATH_MAX` (4096) on Unix and 32 KiB on Windows,
+  and it is checked on the raw hop form, not the cleaned one (see the RFP).
 - **Windows code is reasoned, not measured** (no Windows machine): `absolute`
   runs every path through `filepath.Abs`, `joinTarget` puts a rooted target on
   the link's drive, `linkMode` follows junctions, `windowsName` drops stream

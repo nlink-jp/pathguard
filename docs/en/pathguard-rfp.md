@@ -296,6 +296,11 @@ one had the same cause, so they were fixed at the cause rather than one by one:
   monotone along a path: `/.vol/<dev>` does not stat while `/.vol/<dev>/<ino>`
   does (measured), so the anchor that closes the second review's `/.vol` hole
   would be lost.
+- **Not taken:** capping the cleaned hop form rather than the raw one. The raw
+  cap can refuse a legitimate path whose link target is over 4 KB yet cleans
+  short. That is reachable only on Linux (on darwin a walked path and a link
+  target are each at most 1024 bytes) and only with contrived targets, and it
+  fails closed. Capping the raw string also bounds what `step` walks.
 
 
 ### What changes for the servers (each CHANGELOG says it)
