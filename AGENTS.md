@@ -22,12 +22,13 @@ No Makefile — this is a library, not a binary.
 ```
 pathguard/
 ├── forms.go        # Forms: resolve a path one link at a time; every hop is a form
-├── place.go        # Place, Kind, ServerDir, Check (identity + folded name), link targets
-├── fold.go         # fold/foldPath: Unicode case folding as APFS applies it
+├── place.go        # Place, Kind, ServerDir, Check: anchored identity + folded name; link targets
+├── fold.go         # fold/segKey/foldPath: Unicode case folding as APFS applies it; Windows names
 ├── floor.go        # the one list (Floor), ErrNoHome
 ├── names.go        # EnvFile, SecretName, CredentialSegment (name rules)
 ├── policy.go       # Local and Outbound file policies
 ├── pathguard_test.go
+├── anchor_test.go  # anchors, link targets, the name layer alone, Windows names, BenchmarkLocalCheck
 ├── testdata/runtime-lists.json   # copy of gem-agent/lagent's list + outbound verdicts
 ├── workdir/        # ADR-021: Resolver, NewResolver, Resolve/Validate, Local/OutboundPath,
 │                   #   Sensitive/SensitiveOutbound (no Resolver at hand)
@@ -36,11 +37,19 @@ pathguard/
 
 ## Gotchas
 
-- **Compare places by identity and by name, always both.** Identity catches
-  case variants, links, darwin firmlinks and hard links to file entries; the
-  name comparison covers places that do not exist yet and filesystems with
-  unstable inode numbers. Tests exist for each; a mutation that drops either
-  fails them — keep it so.
+- **Compare places by identity and by name, always both.** Identity is
+  *anchored*: a place is its deepest existing ancestor-or-self (`look`,
+  `anchors[0]`) plus the folded names below it, and a form matches when one of
+  its existing ancestors is the same file and its remaining names begin with
+  the place's. That is what catches a place that does not exist yet under any
+  spelling of its parent (firmlink, `/.nofollow`, `/.vol`, a linked parent);
+  comparing a missing place by its spelling alone let all of those through.
+  The name comparison covers filesystems with unstable inode numbers. Each is
+  tested on its own — `noIdentity` switches identity off — and a mutation that
+  drops either, for tree, exact or link-target places, fails a test; keep it so.
+- **Test seams are package variables:** `statFn` (identity), `getwd`,
+  `windowsNames` (Windows name rules on any platform), `workdir.accountHome`.
+  Restore them in `t.Cleanup`.
 - **Forms are whole paths, never a link's location alone.** `/var` is met on the
   way to every darwin temporary directory; as a form it would match the exact
   place `/private/var` and refuse every temp dir.
@@ -55,12 +64,25 @@ pathguard/
   `ss` (measured 2026-09-22). Use `fold` / `foldPath`;
   `TestFoldAgreesWithTheUnicodeFoldsTheDiskApplies` checks the pairs against
   the disk it runs on.
-- **Link targets are protected one level deep.** `linkTargets` reads a
-  non-system directory place's own entries and adds each link's target as a
-  place; deeper links are a documented limit, not an oversight.
+- **Link targets are protected one level deep, for Credential and AgentControl
+  places only.** `linkTargets` reads the place's own entries and adds each
+  link's target, dangling or not, as a place. It skips a target that is the
+  place or above it (`reachesUp`), and the links in a server's directory,
+  which may lead to work directories. Deeper links are a documented limit.
+- **A place without an absolute path is `ErrBadPlace`,** and refuses every
+  call; an empty `Reason`/`Why` gets default words. An empty `why` means
+  "allowed" to every caller, so a place must never produce one.
+- **One check costs about 2 ms** (`BenchmarkLocalCheck`, Apple Silicon): every
+  place's forms and ancestors are looked up per call, and nothing is cached, on
+  purpose.
+- **Windows code is reasoned, not measured** (no Windows machine): `absolute`
+  runs every path through `filepath.Abs`, `joinTarget` puts a rooted target on
+  the link's drive, `linkMode` follows junctions, `windowsName` drops stream
+  suffixes and trailing dots/spaces. Say so wherever it is described.
 - **An unknown or relative home refuses; a zero `Policy` / `Resolver` refuses;
-  `workdir.Sensitive` refuses when `os.UserHomeDir` fails.** Failing open here is
-  how a floor silently disappears.
+  `workdir.Sensitive` refuses when no home is known.** With `Options.Home`
+  empty, the account's home from `os/user` is protected too when `$HOME` names
+  another. Failing open here is how a floor silently disappears.
 - **The credential list is the runtimes' list.** `testdata/runtime-lists.json`
   holds gem-agent's and lagent's `internal/sandbox/lane.go` lists; the tests hold
   this module to it and `check-org.sh` holds both runtimes to it. Change all

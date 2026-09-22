@@ -43,7 +43,10 @@ func forms(p string) (out []string, ok bool) {
 			out = append(out, s)
 		}
 	}
-	cur := absolute(p)
+	cur, ok := absolute(p)
+	if !ok {
+		return nil, false
+	}
 	add(filepath.Clean(cur))
 	for range maxHops {
 		r := step(cur)
@@ -60,25 +63,45 @@ func forms(p string) (out []string, ok bool) {
 	return out, false
 }
 
+// getwd is os.Getwd; a test replaces it with one that fails.
+var getwd = os.Getwd
+
 // absolute joins a relative path onto the working directory without cleaning
 // it, so a ".." in it is resolved against real directories by step, not
-// cancelled by name. Windows applies ".." by name and has volume-relative
-// forms (\Users, C:foo), so there filepath.Abs is what the system does.
-func absolute(p string) string {
-	if filepath.IsAbs(p) {
-		return p
-	}
+// cancelled by name. A working directory that cannot be read is ok=false: the
+// path would otherwise be walked from the root.
+//
+// Windows normalises every path by name before opening it — ".." applied
+// lexically, the trailing dots and spaces of the last name dropped, rooted and
+// drive-relative forms (\Users, C:foo) completed — so there every path, not
+// only a relative one, goes through filepath.Abs (GetFullPathName), which is
+// that normalisation.
+func absolute(p string) (string, bool) {
 	if runtime.GOOS == "windows" {
-		if a, err := filepath.Abs(p); err == nil {
-			return a
-		}
-		return p
+		a, err := filepath.Abs(p)
+		return a, err == nil
 	}
-	wd, err := os.Getwd()
+	if filepath.IsAbs(p) {
+		return p, true
+	}
+	wd, err := getwd()
 	if err != nil {
-		return p
+		return "", false
 	}
-	return wd + string(filepath.Separator) + p
+	return wd + string(filepath.Separator) + p, true
+}
+
+// joinTarget is where a link in dir whose target is target leads, not yet
+// cleaned. On Windows a target rooted without a drive (\Users\u) is on the
+// link's own volume, not under dir.
+func joinTarget(dir, target string) string {
+	if filepath.IsAbs(target) {
+		return target
+	}
+	if runtime.GOOS == "windows" && filepath.VolumeName(target) == "" && target != "" && os.IsPathSeparator(target[0]) {
+		return filepath.VolumeName(dir) + target
+	}
+	return dir + string(filepath.Separator) + target
 }
 
 type stepResult struct {
@@ -123,20 +146,28 @@ func step(p string) stepResult {
 			}
 			return stepResult{final: rest, ok: true}
 		}
-		if fi.Mode()&os.ModeSymlink == 0 {
+		if !linkMode(fi.Mode()) {
 			walked = cand
 			continue
 		}
 		target, err := os.Readlink(cand)
 		if err != nil {
+			if fi.Mode()&os.ModeSymlink == 0 {
+				// A Windows reparse point that is not a link (a cloud-file
+				// placeholder, a deduplicated file) is an ordinary entry.
+				walked = cand
+				continue
+			}
 			return stepResult{}
 		}
-		next := target
-		if !filepath.IsAbs(target) {
-			next = walked + sep + target
-		}
+		next := joinTarget(walked, target)
 		if rest := strings.Join(parts[i+1:], sep); rest != "" {
 			next += sep + rest
+		}
+		if runtime.GOOS == "windows" {
+			// Windows applies ".." in the combined path by name, as it did in
+			// the path it was given.
+			next = filepath.Clean(next)
 		}
 		return stepResult{link: cand, next: next, ok: true}
 	}

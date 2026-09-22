@@ -1,8 +1,11 @@
 package pathguard
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // Kind says what a Place is, so a caller can choose places by what they are
@@ -43,18 +46,41 @@ func ServerDir(path, note string) Place {
 	return Place{Path: path, Kind: Protected, Reason: "server_dir", Why: why}
 }
 
+// ErrBadPlace is returned, and every check refused, when a place has no
+// absolute path: a place that cannot be compared must not silently protect
+// nothing.
+var ErrBadPlace = errors.New("a protected place has no absolute path, so nothing can be checked against it")
+
+// validPlaces reports the first place that cannot be compared.
+func validPlaces(places []Place) error {
+	for _, p := range places {
+		if p.Path == "" || !filepath.IsAbs(p.Path) {
+			return fmt.Errorf("%w (%q)", ErrBadPlace, p.Path)
+		}
+	}
+	return nil
+}
+
 // Check reports the first place any form of any of paths lies in — its reason
 // and sentence — or two empty strings. A path whose chain of links does not
-// end is refused with reason "unresolvable_path".
+// end is refused with reason "unresolvable_path"; a place without an absolute
+// path refuses every path, with reason "unconfigured".
 //
 // Every place is compared with every form twice, and a match either way
-// counts: by identity (os.SameFile against the form and each existing
-// directory above it), which catches every spelling of a place that exists —
-// case on a case-insensitive disk, links, normalisation — and by name,
-// case-folded, which still covers a place that does not exist yet and a
-// filesystem whose inode numbers cannot be trusted. An Exact place matches the
-// form itself only, never an ancestor: otherwise "/" would refuse everything.
+// counts. By identity: the place is anchored at the deepest part of its path
+// that exists — the place itself, or the directory it would be created in —
+// together with the names of the rest, and a form matches when one of its own
+// existing ancestors is the same file and its remaining names begin with the
+// place's. That catches every spelling of the existing part — case on a
+// case-insensitive disk, links, firmlinks, /.nofollow, /.vol, normalisation —
+// whether or not the place itself exists yet. And by name, folded, which still
+// protects on a filesystem whose inode numbers cannot be trusted. An Exact
+// place matches the form itself only, never an ancestor: otherwise "/" would
+// refuse everything.
 func Check(places []Place, paths ...string) (reason, why string) {
+	if err := validPlaces(places); err != nil {
+		return "unconfigured", err.Error()
+	}
 	views, ok := viewsOf(paths)
 	if !ok {
 		return unresolvable()
@@ -77,12 +103,23 @@ func checkViews(places []Place, views []view) (reason, why string) {
 	return "", ""
 }
 
-// view is one form ready for comparison: its cleaned spelling, its own
-// identity, and the identities of it and every existing directory above it.
+// statFn is os.Stat; a test replaces it to stand for a filesystem whose
+// identities cannot be read, and so proves the name comparison on its own.
+var statFn = os.Stat
+
+// anchor is an existing ancestor-or-self of a path, and the path's remaining
+// segments below it, each folded (segKey). rest is empty when the anchor is
+// the path itself.
+type anchor struct {
+	info os.FileInfo
+	rest []string
+}
+
+// view is one form ready for comparison: its cleaned spelling, and an anchor
+// for every existing ancestor-or-self, deepest first.
 type view struct {
-	path  string
-	self  os.FileInfo
-	chain []os.FileInfo
+	path    string
+	anchors []anchor
 }
 
 func viewsOf(paths []string) ([]view, bool) {
@@ -100,106 +137,156 @@ func viewsOf(paths []string) ([]view, bool) {
 
 func look(form string) view {
 	v := view{path: filepath.Clean(form)}
+	var rest []string
 	for cur := v.path; ; {
-		if fi, err := os.Stat(cur); err == nil {
-			if cur == v.path {
-				v.self = fi
-			}
-			v.chain = append(v.chain, fi)
+		if fi, err := statFn(cur); err == nil {
+			v.anchors = append(v.anchors, anchor{info: fi, rest: append([]string(nil), rest...)})
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			return v
 		}
+		rest = append([]string{segKey(filepath.Base(cur))}, rest...)
 		cur = parent
 	}
 }
 
-// prepared is a Place looked up once for one check: its spellings for the name
-// comparison (as given and resolved) and its identity, nil when it does not
-// exist.
+// prepared is a Place looked up once for one check: every form of its path,
+// for the name comparison, and each form's deepest anchor, for identity.
 type prepared struct {
 	Place
 	spellings []string
-	info      os.FileInfo
+	anchors   []anchor
 }
 
 func prepare(places []Place) []prepared {
 	out := make([]prepared, 0, len(places))
 	for _, pl := range places {
-		if pl.Path == "" {
-			continue
-		}
-		p := prepared{Place: pl, spellings: []string{filepath.Clean(pl.Path)}}
-		if r, err := filepath.EvalSymlinks(pl.Path); err == nil && filepath.Clean(r) != p.spellings[0] {
-			p.spellings = append(p.spellings, filepath.Clean(r))
-		}
-		if fi, err := os.Stat(pl.Path); err == nil {
-			p.info = fi
-		}
+		p := prepareOne(pl)
 		out = append(out, p)
 		out = append(out, linkTargets(p)...)
 	}
 	return out
 }
 
-// linkTargets protects where the links directly inside a place lead. A link's
-// own location is inside the place and already protected; its target need not
-// be. On the machine that found it, ~/.ssh/config links into a sync folder,
-// and the sync folder's copy — the same bytes — was readable by naming it.
+func prepareOne(pl Place) prepared {
+	if pl.Reason == "" {
+		pl.Reason = "protected_path"
+	}
+	if pl.Why == "" {
+		pl.Why = "it is inside the protected location " + pl.Path
+	}
+	p := prepared{Place: pl}
+	fs, _ := forms(pl.Path)
+	for _, f := range fs {
+		p.spellings = append(p.spellings, f)
+		if v := look(f); len(v.anchors) > 0 {
+			p.anchors = append(p.anchors, v.anchors[0])
+		}
+	}
+	return p
+}
+
+// linkTargets protects where the links directly inside a credential or
+// agent-control directory lead. A link's own location is inside the place and
+// already protected; its target need not be. On the machine that found it,
+// ~/.ssh/config links into a sync folder, and the sync folder's copy — the same
+// bytes — was readable by naming it; a dangling one could be created there.
 // Only a place's own entries are read, one directory per place per check;
-// links deeper inside are not followed (a documented limit). System places are
-// skipped: their links lead to more system files, and /usr is large.
+// links deeper inside are not followed (a documented limit). A target that is
+// the place itself or lies above it (a link to / or to the home directory) is
+// skipped: it would make the place's parents a protected tree and refuse
+// everything. Other places are skipped: a system tree's links lead to more
+// system files, and a server's own directory may link to work directories.
 func linkTargets(p prepared) []prepared {
-	if p.Kind == System || p.Exact || p.info == nil || !p.info.IsDir() {
+	if p.Exact || p.Kind != Credential && p.Kind != AgentControl {
 		return nil
 	}
 	entries, err := os.ReadDir(p.Path)
 	if err != nil {
 		return nil
 	}
+	var above []os.FileInfo
+	for _, a := range look(p.Path).anchors {
+		above = append(above, a.info)
+	}
 	var out []prepared
 	for _, e := range entries {
-		if e.Type()&os.ModeSymlink == 0 {
+		if !linkMode(e.Type()) {
 			continue
 		}
 		at := filepath.Join(p.Path, e.Name())
-		fi, err := os.Stat(at)
+		target, err := os.Readlink(at)
 		if err != nil {
 			continue
 		}
-		t := prepared{Place: p.Place, info: fi}
-		if r, err := filepath.EvalSymlinks(at); err == nil {
-			t.spellings = []string{filepath.Clean(r)}
+		t := prepareOne(Place{
+			Path:   joinTarget(p.Path, target),
+			Kind:   p.Kind,
+			Reason: p.Reason,
+			Why:    "it is where " + at + " leads, and " + p.Why,
+		})
+		if !reachesUp(t, above) {
+			out = append(out, t)
 		}
-		out = append(out, t)
 	}
 	return out
 }
 
-func (pl prepared) holds(v view) bool {
-	if pl.Exact {
-		if pl.info != nil && v.self != nil && os.SameFile(pl.info, v.self) {
-			return true
+// reachesUp reports whether an existing form of t is one of above.
+func reachesUp(t prepared, above []os.FileInfo) bool {
+	for _, a := range t.anchors {
+		if len(a.rest) != 0 {
+			continue
 		}
-		for _, s := range pl.spellings {
-			if sameName(v.path, s) {
+		for _, fi := range above {
+			if os.SameFile(a.info, fi) {
 				return true
 			}
 		}
-		return false
 	}
-	if pl.info != nil {
-		for _, fi := range v.chain {
-			if os.SameFile(pl.info, fi) {
+	return false
+}
+
+// linkMode reports whether an entry may be a link to follow: a symbolic link,
+// or on Windows any reparse point Go reports as irregular (a junction since
+// Go 1.23), which os.Readlink then reads or rejects.
+func linkMode(m os.FileMode) bool {
+	return m&os.ModeSymlink != 0 || runtime.GOOS == "windows" && m&os.ModeIrregular != 0
+}
+
+func (pl prepared) holds(v view) bool {
+	for _, a := range pl.anchors {
+		for _, b := range v.anchors {
+			if !os.SameFile(a.info, b.info) {
+				continue
+			}
+			if pl.Exact && equalSegs(b.rest, a.rest) || !pl.Exact && prefixSegs(b.rest, a.rest) {
 				return true
 			}
 		}
 	}
 	for _, s := range pl.spellings {
-		if withinFold(v.path, s) {
+		if pl.Exact && sameName(v.path, s) || !pl.Exact && withinFold(v.path, s) {
 			return true
 		}
 	}
 	return false
+}
+
+func equalSegs(a, b []string) bool {
+	return len(a) == len(b) && prefixSegs(a, b)
+}
+
+// prefixSegs reports whether segs begins with prefix, segment by segment.
+func prefixSegs(segs, prefix []string) bool {
+	if len(prefix) > len(segs) {
+		return false
+	}
+	for i := range prefix {
+		if segs[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -1,6 +1,6 @@
 # RFP: pathguard — one judgement of whether a path may be touched
 
-- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies); implementation reviewed independently the same day, findings folded in (§ "What the implementation review changed")
+- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies); implementation reviewed independently twice the same day, findings folded in (§ "What the implementation reviews changed")
 - Date: 2026-09-22
 - Series: lib-series
 - Amends (on acceptance): organization ADR-021 §4, §7 and §10, through a new organization ADR-022
@@ -104,6 +104,9 @@ func Forms(p string) []string
 // ServerDir is the Place for a server's own directory (reason "server_dir").
 func ServerDir(path, note string) Place
 
+// A place without an absolute path refuses every call (ErrBadPlace).
+var ErrBadPlace error
+
 // Check reports the first place any form of any of paths lies in.
 func Check(places []Place, paths ...string) (reason, why string)
 
@@ -129,7 +132,7 @@ const (CodeRequired = "work_dir_required"; CodeInvalid = "work_dir_invalid";
 type Error struct{ Code, Message string; Details map[string]any }
 
 type Options struct {
-    Home         string           // "" → os.UserHomeDir(); if that fails, every call is refused
+    Home         string           // "" → $HOME, plus the account's home (os/user) when it differs; neither known → every call is refused
     Protected    []pathguard.Place // this server's own directories, and any it guards
     RequiredHint string           // what the directory is for here, appended to work_dir_required
 }
@@ -162,44 +165,57 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    (`/var` would otherwise match the exact place `/private/var` for every darwin
    temporary directory). `work/x → ~/.ssh/config → <sync>/config` is refused because
    its middle form lies in `~/.ssh`.
-2. **Two comparisons, always both.** Identity (`os.SameFile` against the form and
-   the existing directories above it) catches every spelling of an existing
-   place — case, links, normalisation, a hard link to a file entry such as
-   `~/.netrc`. The name comparison, case-folded, covers a place that does not
-   exist yet and a filesystem whose inode numbers cannot be trusted (macFUSE
-   without `use_ino`, smbfs), where identity alone would be weaker than today.
-   Names are folded the way APFS folds them — Unicode case folding with its
-   one-to-many expansions, not ASCII lowercase. Folding over-refuses on a
-   case-sensitive disk; a floor may.
+2. **Two comparisons, always both.** Identity is anchored. A place is its
+   deepest existing ancestor-or-self plus the folded names below it. A form
+   matches when one of its own existing ancestors is the same file
+   (`os.SameFile`) and its remaining names begin with the place's. That catches
+   every spelling of what exists — case, links, firmlinks, `/.nofollow`, `/.vol`,
+   normalisation, a hard link to a file entry such as `~/.netrc` — for a place
+   that exists and for one that does not yet. The name comparison, folded, covers
+   a filesystem whose inode numbers cannot be trusted (macFUSE without `use_ino`,
+   smbfs), where identity alone would be weaker than today. Names are folded the
+   way APFS folds them — Unicode case folding with its one-to-many expansions,
+   not ASCII lowercase. Folding over-refuses on a case-sensitive disk; a floor
+   may.
 3. **Exact places match the form itself, never its ancestors** — otherwise every
    temporary directory is refused.
 4. **Home comes from the caller, by identity.** The runtimes' `homePrefixRe`
    (`/users/…`, `/home/…` by name) misses `/root`, `/private/var/root`, Windows
    homes and a moved `$HOME`, and matches other users' homes. `Floor(home)` with
    identity replaces it: the policies protect the home directory of the account
-   the server runs as, and no longer another user's `.claude` as a name.
+   the server runs as, and no longer another user's `.claude` as a name. With no
+   home given, that is `$HOME` and, when it differs, the account's home from the
+   user database: a server started with `HOME` pointing elsewhere still protects
+   the real one.
 5. **An unknown home refuses.** Today's check returns "" when the home directory
    cannot be found — it passes everything. `Floor("")` is an error, and so is a
    relative home (it would put the floor under the working directory); the
    resolver refuses every call, saying why.
-6. **Cost is bounded per call, nothing is cached.** Each place is `Stat`ed once,
-   each form's ancestors walked once, comparisons done in memory. A cache would
-   miss a place created after it was filled.
+6. **Cost is bounded per call, nothing is cached.** Per check, each place's own
+   forms and their ancestors are looked up once, each credential directory is
+   listed once for its links, and each form's ancestors are walked once. That is
+   about 2 ms per check on Apple Silicon (`BenchmarkLocalCheck`), and
+   comparisons are done in memory. A cache would miss a place created after it
+   was filled.
 7. **Standard library only, pinned by a test.** Two consumers promise no
    third-party dependencies (reworded to allow nlink-jp modules, per the
    operator, 2026-09-22); the module keeps the promise with a test that its
    `go.mod` has no `require`.
 
-### What the implementation review changed
+### What the implementation reviews changed
 
-An independent review of the implementation, before release, found five holes
-and a set of test gaps. Each fix has a test that fails without it.
+Two independent reviews of the implementation, before release, found holes and
+test gaps. Every fix is checked by a mutation that a test kills, except
+`filepath.Abs` on Windows, which cannot run here.
+
+**First review** — five holes:
 
 - **Unicode folding.** `strings.ToLower` let `id_rſa` (U+017F) through; on APFS
   it opens `id_rsa`. Measured on the disk: `ſ` = `s`, the Kelvin sign = `k`,
   `ﬆ` and `ﬅ` = `st`, `ß` = `ss`. The comparison key is now the smallest member
   of each rune's simple-folding orbit, after the full foldings (`ß`, `ẞ`, the
-  Latin ligatures); a test checks every pair against the disk it runs on.
+  Latin ligatures). One test checks every table entry, and another the pairs
+  it can create against the disk it runs on.
 - **Link targets.** A link's own location inside a place was protected, its
   target was not: the sync folder's copy of `~/.ssh/config` could be read by
   naming it. The targets of the links directly inside a non-system directory
@@ -212,10 +228,40 @@ and a set of test gaps. Each fix has a test that fails without it.
 - **A call site without a `Resolver`** (voice-scribe's transcribe calls
   `workdir.Sensitive`) had no module function to move to; `Sensitive` and
   `SensitiveOutbound` fail closed on an unknown home.
-- **Windows** (the servers also build there): a relative path is made absolute
-  with `filepath.Abs`, since Windows applies `..` by name and has
+- **Windows** (six of the servers ship Windows binaries): a relative path is
+  made absolute with `filepath.Abs`, since Windows applies `..` by name and has
   volume-relative forms; the name comparison drops the trailing dots and spaces
   Windows ignores.
+
+**Second review** — one high and three medium holes. The high one and one medium
+one had the same cause, so they were fixed at the cause rather than one by one:
+
+- **A place that did not exist yet was compared only by its spelling**, and the
+  spellings of its existing parent are unbounded. The firmlink,
+  `/.nofollow/…`, `/.vol/<dev>/<ino>/…`, a linked `~/.config`, and a
+  normalised non-ASCII home all created the real `~/.aws/credentials` or
+  `~/.config/gem-agent/config.toml`. The cause was a place without an
+  identity. The fix is the anchor (decision 2), which also covers the next
+  point.
+- **A dangling link inside a floor directory** (`~/.ssh/config` → a missing
+  file in a sync folder) left its target unprotected, so the file could be
+  planted there. The target is now an ordinary place, anchored like any
+  missing one.
+- **A place without `Why` protected nothing**, because every caller reads an
+  empty sentence as "allowed". Empty words are now filled in, and a place
+  without an absolute path is `ErrBadPlace` and refuses every call.
+- **Windows normalisation** applied only to relative paths. Every path now goes
+  through `filepath.Abs`. A stream suffix (`.env::$DATA`) and trailing dots and
+  spaces are dropped from names for the name rules too, a rooted link target
+  (`\Users\u`) is put on the link's drive, and junctions are followed as
+  links.
+- **Low findings, taken:**
+  - A link to `/` or to the home directory inside a floor directory made
+    everything a protected tree; such a target is now skipped, and a server's
+    own directory's links are not followed.
+  - A working directory that cannot be read now refuses a relative path.
+  - The account's own home is protected when `$HOME` names another.
+
 
 ### What changes for the servers (each CHANGELOG says it)
 
@@ -223,8 +269,8 @@ and a set of test gaps. Each fix has a test that fails without it.
   from the combined list (`~/.kube`, `~/.config/gh`, `~/.azure`, `~/.terraform.d`,
   `~/.gemini`, `~/.config/mcp-bridge`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`,
   `~/.git-credentials`, `~/.vault-token`, `~/.docker/config.json`, `~/.claude.json`,
-  `~/.bash_history`, `~/.zsh_history`), and every case variant and link route to
-  any floor place. **Accepted now** — `.env.example`, `.env.sample`,
+  `~/.bash_history`, `~/.zsh_history`), and every spelling of any floor place,
+  whether it exists yet or not. **Accepted now** — `.env.example`, `.env.sample`,
   `.env.template`, `.env.dist`.
 - **Outbound (uploads): refused now** in addition — a credential directory or
   file name as a segment anywhere, and the secret names anywhere. slack-mcp-extender
@@ -240,10 +286,16 @@ and a set of test gaps. Each fix has a test that fails without it.
   another name, or a copy of a secret, is not detected by the Local policy.
 - On a filesystem with unstable inode numbers, identity can collide and refuse a
   legitimate path; there the name comparison is what protects.
-- Unicode normalisation is handled for existing places (by identity), not for a
-  place that does not exist yet under a non-ASCII home.
-- Only the links directly inside a place are followed to their targets; a
-  link deeper inside protects its own location, not where it leads.
+- Unicode normalisation is handled by identity. Only the names below a missing
+  place's deepest existing directory are compared without it. That matters only
+  for a protected directory with non-ASCII names that has not been created yet;
+  the floor's names are ASCII.
+- Only the links directly inside a credential or agent-control directory are
+  followed to their targets; a link deeper inside protects its own location,
+  not where it leads.
+- Windows is reasoned from the platform's documented behaviour, not measured
+  (there is no Windows machine to measure on). 8.3 short names reach an
+  existing place by identity but pass the Outbound policy's name-only rules.
 - Another user's `.claude`, `.gemini` and `.codex` are not protected (decision
   4); the fixture records this as an intended difference from the runtimes.
 

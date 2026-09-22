@@ -13,9 +13,9 @@ var envTemplates = map[string]bool{
 
 // EnvFile reports whether a file name is a .env file holding secrets: .env and
 // .env.*, except the committed templates. Names are compared as a
-// case-insensitive filesystem compares them (fold).
+// case-insensitive filesystem compares them (segKey).
 func EnvFile(name string) bool {
-	b := fold(name)
+	b := segKey(name)
 	if foldedTemplates[b] {
 		return false
 	}
@@ -37,7 +37,7 @@ func SecretName(name string) bool {
 	if EnvFile(name) {
 		return true
 	}
-	b := fold(name)
+	b := segKey(name)
 	for _, s := range secretNames {
 		if b == fold(s) {
 			return true
@@ -55,7 +55,7 @@ var secretNames = []string{
 // passes through as a path segment — anywhere, not only under a home
 // directory — or "". The names that also occur inside projects with another
 // meaning (.claude, .gemini, .codex) are skipped. Names are compared as a
-// case-insensitive filesystem compares them (fold). A name may span several
+// case-insensitive filesystem compares them (segKey). A name may span several
 // segments (.config/gcloud, .docker/config.json).
 func CredentialSegment(p string) string {
 	folded := foldPath(filepath.ToSlash(p))

@@ -19,6 +19,12 @@ import (
 // sign, k and K), after the full foldings that expand one rune into several —
 // ß and ẞ to "ss", the Latin ligatures to their letters. Only equality of keys
 // means anything.
+//
+// It is APFS's equivalence where the result is ASCII — and every protected
+// name is ASCII. The second review measured every code point on APFS: the
+// only characters it equates with ASCII letters are ſ, the Kelvin sign and
+// the fullFolds entries. It does not normalise (composed and decomposed é
+// differ here); identity covers normalisation for whatever exists.
 var fullFolds = map[rune]string{
 	'ß': "ss", 'ẞ': "ss",
 	'ﬀ': "ff", 'ﬁ': "fi", 'ﬂ': "fl", 'ﬃ': "ffi", 'ﬄ': "ffl", 'ﬅ': "st", 'ﬆ': "st",
@@ -49,16 +55,37 @@ func canon(r rune) rune {
 	return m
 }
 
-// foldPath is fold applied segment by segment, with "/" as the separator.
-// Windows also ignores trailing dots and spaces in a name, so they are dropped
-// there.
+// windowsNames switches on the name normalisation Windows applies (see
+// windowsName). It is the platform's, and a variable so that the rules can be
+// tested on any platform.
+var windowsNames = runtime.GOOS == "windows"
+
+// segKey is the comparison key of one path segment: fold, after, on Windows,
+// windowsName.
+func segKey(s string) string {
+	if windowsNames {
+		s = windowsName(s)
+	}
+	return fold(s)
+}
+
+// windowsName is a name as Windows opens it: without an alternate data stream
+// (".env::$DATA" is the file .env, ".ssh::$INDEX_ALLOCATION" the directory
+// .ssh) and without the trailing dots and spaces Windows ignores. It is
+// applied to every segment, where Windows trims only the last; that can only
+// refuse more. A drive ("C:") becomes "C" on both sides of a comparison alike.
+func windowsName(s string) string {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, ". ")
+}
+
+// foldPath is segKey applied segment by segment, with "/" as the separator.
 func foldPath(p string) string {
 	segs := split(p)
 	for i, s := range segs {
-		if runtime.GOOS == "windows" {
-			s = strings.TrimRight(s, ". ")
-		}
-		segs[i] = fold(s)
+		segs[i] = segKey(s)
 	}
 	out := strings.Join(segs, "/")
 	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {

@@ -37,6 +37,9 @@ func newPolicy(home string, outbound bool, protected []Place) (Policy, error) {
 	if err != nil {
 		return Policy{}, err
 	}
+	if err := validPlaces(protected); err != nil {
+		return Policy{}, err
+	}
 	var places []Place
 	for _, p := range floor {
 		// System locations refuse a work directory, not a file: reading

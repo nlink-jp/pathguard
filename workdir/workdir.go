@@ -15,8 +15,10 @@ package workdir
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -52,7 +54,9 @@ func newErr(code, format string, args ...any) *Error {
 // Options configure a Resolver.
 type Options struct {
 	// Home is the home directory the credential floor is relative to. Empty
-	// means os.UserHomeDir(); if that fails, every call is refused.
+	// means the process's: os.UserHomeDir(), and also the account's own home
+	// from the user database when the environment names another. If neither
+	// is known, every call is refused.
 	Home string
 	// Protected are the server's own configuration and state directories
 	// (pathguard.ServerDir), and any other directory it guards.
@@ -68,7 +72,7 @@ type Options struct {
 // denying none of them.
 type Resolver struct {
 	built    bool
-	homeErr  error
+	setupErr error             // ErrNoHome or ErrBadPlace: every call is refused
 	places   []pathguard.Place // the whole floor and the protected directories: for a work directory
 	local    pathguard.Policy
 	outbound pathguard.Policy
@@ -78,21 +82,94 @@ type Resolver struct {
 // NewResolver builds a Resolver.
 func NewResolver(o Options) Resolver {
 	r := Resolver{built: true, hint: strings.TrimSpace(o.RequiredHint)}
-	home := o.Home
-	if home == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			home = h
-		}
+	home, extra, err := homes(o.Home)
+	if err != nil {
+		r.setupErr = err
+		return r
 	}
 	floor, err := pathguard.Floor(home)
 	if err != nil {
-		r.homeErr = err
+		r.setupErr = err
 		return r
 	}
-	r.places = append(floor, o.Protected...)
-	r.local, _ = pathguard.Local(home, o.Protected...)
-	r.outbound, _ = pathguard.Outbound(home, o.Protected...)
+	protected := append(nonSystem(extra), o.Protected...)
+	if r.local, err = pathguard.Local(home, protected...); err != nil {
+		r.setupErr = err
+		return r
+	}
+	if r.outbound, err = pathguard.Outbound(home, protected...); err != nil {
+		r.setupErr = err
+		return r
+	}
+	r.places = append(append(floor, extra...), o.Protected...)
 	return r
+}
+
+// accountHome is the home directory of the account this process runs as, from
+// the user database rather than the environment; a test replaces it.
+var accountHome = func() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.HomeDir
+}
+
+// homes returns the home directory the floor is relative to, and the floor of
+// a second one: the account's own, when the environment names another. A
+// server started with HOME pointing elsewhere still protects the account's
+// real ~/.ssh. A home named by the caller is the only one.
+func homes(given string) (home string, extra []pathguard.Place, err error) {
+	if given != "" {
+		return given, nil, nil
+	}
+	env, _ := os.UserHomeDir()
+	acct := accountHome()
+	if !filepath.IsAbs(env) {
+		env = ""
+	}
+	if !filepath.IsAbs(acct) {
+		acct = ""
+	}
+	switch {
+	case env == "" && acct == "":
+		return "", nil, pathguard.ErrNoHome
+	case env == "":
+		return acct, nil, nil
+	case acct == "" || sameDir(env, acct):
+		return env, nil, nil
+	}
+	extra, err = pathguard.Floor(acct)
+	return env, extra, err
+}
+
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
+}
+
+// nonSystem drops the system places, which refuse a work directory but not a
+// file (pathguard.Local and Outbound leave them out of their own floor).
+func nonSystem(places []pathguard.Place) []pathguard.Place {
+	var out []pathguard.Place
+	for _, p := range places {
+		if p.Kind != pathguard.System {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// setupReason is the details.reason of a Resolver that could not be built.
+func setupReason(err error) string {
+	if errors.Is(err, pathguard.ErrNoHome) {
+		return "home_unknown"
+	}
+	return "unconfigured"
 }
 
 // Resolve returns the validated work directory for one call: the tool's
@@ -161,8 +238,8 @@ func (r Resolver) denied(dir, resolved string) (reason, why string) {
 	if !r.built {
 		return "unconfigured", "this server's work-directory check was not set up (workdir.NewResolver)"
 	}
-	if r.homeErr != nil {
-		return "home_unknown", r.homeErr.Error()
+	if r.setupErr != nil {
+		return setupReason(r.setupErr), r.setupErr.Error()
 	}
 	if reason, why := pathguard.Check(r.places, dir, resolved); why != "" {
 		return reason, why
@@ -197,15 +274,16 @@ func (r Resolver) unusable() (reason, why string) {
 	if !r.built {
 		return "unconfigured", "this server's path check was not set up (workdir.NewResolver)"
 	}
-	if r.homeErr != nil {
-		return "home_unknown", r.homeErr.Error()
+	if r.setupErr != nil {
+		return setupReason(r.setupErr), r.setupErr.Error()
 	}
 	return "", ""
 }
 
 // Sensitive reports why a path may not be read or written on this machine —
-// the Local policy with this process's home directory — or "". It is for the
-// call sites that hold no Resolver; an unknown home refuses, with the reason.
+// the Local policy with this process's home directories (as Options.Home
+// empty) — or "". It is for the call sites that hold no Resolver; an unknown
+// home refuses, with the reason.
 // Pass every spelling you have: as given, and resolved.
 func Sensitive(paths ...string) string {
 	p, err := policyFor(pathguard.Local)
@@ -228,11 +306,11 @@ func SensitiveOutbound(paths ...string) string {
 }
 
 func policyFor(build func(string, ...pathguard.Place) (pathguard.Policy, error)) (pathguard.Policy, error) {
-	home, err := os.UserHomeDir()
+	home, extra, err := homes("")
 	if err != nil {
-		return pathguard.Policy{}, pathguard.ErrNoHome
+		return pathguard.Policy{}, err
 	}
-	return build(home)
+	return build(home, nonSystem(extra)...)
 }
 
 // writable reports whether this process can create an entry in dir. It is a

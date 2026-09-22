@@ -241,6 +241,7 @@ func TestAZeroResolverRefusesEverything(t *testing.T) {
 // Without a home directory the floor cannot be applied; the copies passed
 // everything then. Now every call is refused, saying why.
 func TestAnUnknownHomeRefusesEveryCall(t *testing.T) {
+	accountHomeIs(t, "")
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
 	t.Setenv("home", "")
@@ -323,11 +324,68 @@ func TestSensitiveUsesTheProcessHomeAndFailsClosed(t *testing.T) {
 	if why := SensitiveOutbound(evidence); why == "" {
 		t.Error("SensitiveOutbound would send the evidence copy")
 	}
+	accountHomeIs(t, "")
 	t.Setenv("HOME", "")
 	if h, err := os.UserHomeDir(); err == nil && h != "" {
 		t.Skipf("the home directory is still known here: %q", h)
 	}
 	if why := Sensitive("/srv/data/report.pdf"); !strings.Contains(why, "home directory") {
 		t.Errorf("an unknown home: Sensitive = %q, want a refusal naming the home directory", why)
+	}
+	if why := SensitiveOutbound("/srv/data/report.pdf"); !strings.Contains(why, "home directory") {
+		t.Errorf("an unknown home: SensitiveOutbound = %q, want a refusal naming the home directory", why)
+	}
+}
+
+// accountHomeIs stands for the user database's answer.
+func accountHomeIs(t *testing.T, home string) {
+	t.Helper()
+	saved := accountHome
+	accountHome = func() string { return home }
+	t.Cleanup(func() { accountHome = saved })
+}
+
+// A server started with HOME pointing elsewhere still protects the account's
+// own home; a home named by the caller is the only one.
+func TestTheAccountsHomeIsProtectedWhenHOMEPointsElsewhere(t *testing.T) {
+	env, acct := realTemp(t), realTemp(t)
+	t.Setenv("HOME", env)
+	accountHomeIs(t, acct)
+	key := filepath.Join(acct, ".ssh", "id_rsa")
+	r := NewResolver(Options{})
+	if reason, _ := r.LocalPath(key, key); reason != "sensitive_path" {
+		t.Errorf("LocalPath(account's key) reason = %q, want sensitive_path", reason)
+	}
+	if reason, _ := r.LocalPath(filepath.Join(env, ".ssh", "id_rsa"), filepath.Join(env, ".ssh", "id_rsa")); reason != "sensitive_path" {
+		t.Errorf("LocalPath($HOME's key) reason = %q, want sensitive_path", reason)
+	}
+	if _, err := r.Validate(acct); code(t, err) != CodeDenied {
+		t.Errorf("Validate(account home) = %v, want work_dir_denied", err)
+	}
+	if why := Sensitive(key); why == "" {
+		t.Error("Sensitive passed the account's key")
+	}
+	if why := SensitiveOutbound(key); why == "" {
+		t.Error("SensitiveOutbound passed the account's key")
+	}
+	named := NewResolver(Options{Home: env})
+	if _, why := named.LocalPath(key, key); why != "" {
+		t.Errorf("a named home also protected the account's: %s", why)
+	}
+}
+
+// A protected place that cannot be compared refuses every call instead of
+// protecting nothing.
+func TestAProtectedPlaceWithoutAnAbsolutePathRefusesEveryCall(t *testing.T) {
+	r := NewResolver(Options{Home: realTemp(t), Protected: []pathguard.Place{pathguard.ServerDir("", "")}})
+	if _, err := r.Validate(realTemp(t)); code(t, err) != CodeDenied {
+		t.Errorf("Validate = %v, want work_dir_denied", err)
+	}
+	var e *Error
+	if _, err := r.Validate(realTemp(t)); errors.As(err, &e) && e.Details["reason"] != "unconfigured" {
+		t.Errorf("details.reason = %v, want unconfigured", e.Details["reason"])
+	}
+	if reason, _ := r.LocalPath("/srv/x", "/srv/x"); reason != "unconfigured" {
+		t.Errorf("LocalPath reason = %q, want unconfigured", reason)
 	}
 }

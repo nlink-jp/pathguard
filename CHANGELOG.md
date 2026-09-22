@@ -20,9 +20,21 @@ to [Semantic Versioning](https://semver.org/).
   checks), `LocalPath`, `OutboundPath`, and the fleet's error codes.
 - `workdir.Sensitive` / `workdir.SensitiveOutbound` for call sites that hold no
   `Resolver`; `work_dir_denied` carries `details.reason`.
+- Identity is anchored: a place that does not exist yet is found through any
+  spelling of the directory it would be created in (a firmlink, `/.nofollow`,
+  `/.vol`, a linked parent).
 - Names are compared by Unicode case folding as APFS applies it (`id_rſa` is
-  `id_rsa`), not by ASCII lowercase; the targets of the links directly inside a
-  protected directory are protected too; a `..` after a missing component is
-  resolved against what exists; an empty or relative home refuses everything.
+  `id_rsa`), not by ASCII lowercase.
+- The targets of the links directly inside a credential or agent-control
+  directory are protected, dangling ones included, except a link to the
+  directory itself or above it.
+- A `..` after a missing component is resolved against what exists.
+- Fail closed: an empty or relative home, a working directory that cannot be
+  read, and a protected place without an absolute path (`ErrBadPlace`) all
+  refuse everything.
+- With `Options.Home` empty, the account's own home is protected as well when
+  `$HOME` names another.
+- Windows handling (not run on Windows): `filepath.Abs` normalisation, stream
+  suffixes and trailing dots in names, junctions, rooted link targets.
 - Replaces the nine per-server copies of `internal/workdir`, which compared
   locations by name on a case-insensitive disk.

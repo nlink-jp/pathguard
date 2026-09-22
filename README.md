@@ -6,7 +6,7 @@ A Go library, standard library only. It decides whether a path lies in a place
 nothing may reach — system locations, credential stores, an agent's
 configuration, a server's own directories — and does so by **file identity as
 well as by name**, so a case variant on a case-insensitive disk, a symlink, or a
-firmlink cannot walk past it.
+firmlink cannot walk past it — whether the place exists yet or not.
 
 ## Packages
 
@@ -45,8 +45,13 @@ if errors.As(err, &e) {
 ```
 
 A zero `workdir.Resolver` refuses everything — only `NewResolver` builds a
-working one. If the home directory cannot be determined, every call is refused
-and says why.
+working one. If the home directory cannot be determined, or a protected place
+has no absolute path (`ServerDir("")`), every call is refused and says why.
+
+With `Options.Home` empty, the floor is built for the home directory the
+environment names (`$HOME`) and, when it differs, for the account's own home
+from the user database as well: a server started with `HOME` pointing
+elsewhere still protects the real `~/.ssh`.
 
 ### A file the call names
 
@@ -59,7 +64,8 @@ if reason, why := r.OutboundPath(raw, resolved); why != "" { /* refuse */ }
 ```
 
 A call site that holds no `Resolver` uses the package functions, which build
-the policy from this process's home directory (an unknown home refuses):
+the policy from this process's home directories, as `Options.Home` empty does
+(an unknown home refuses):
 
 ```go
 if why := workdir.Sensitive(raw, resolved); why != "" { /* refuse */ }         // Local
@@ -86,17 +92,28 @@ System locations refuse a work directory, not a file.
   every path on the way, and the final path are all checked. A link planted as
   `work/x → ~/.ssh/config`, where `~/.ssh/config` itself links into a sync
   folder, is refused because its middle form lies in `~/.ssh`.
-- **Identity and name, always both.** Identity (`os.SameFile` against the form
-  and each existing directory above it) catches every spelling of a place that
-  exists — case, links, firmlinks, a hard link to a file such as `~/.netrc`. The
-  name comparison covers a place that does not exist yet and a filesystem whose
-  inode numbers cannot be trusted.
+- **Identity and name, always both.**
+  - Identity anchors each place at the deepest part of its path that exists:
+    the place itself, or the directory it would be created in, plus the names
+    of the rest. A form matches when one of its own existing ancestors is the
+    same file (`os.SameFile`) and its remaining names begin with the place's.
+    That catches every spelling of what exists — case, links, firmlinks,
+    `/.nofollow`, `/.vol`, Unicode normalisation, a hard link to a file such as
+    `~/.netrc` — and it does so for `~/.aws/credentials` before `~/.aws` exists.
+  - The name comparison still protects on a filesystem whose inode numbers
+    cannot be trusted.
 - **Names are folded the way the disk folds them.** APFS matches names by
   Unicode case folding, not ASCII lowercase: `id_rſa` opens `id_rsa`, the Kelvin
   sign opens `k`, `.ﬆ` opens `.st`. The name comparison folds the same way,
-  including the expansions `ß` → `ss` and the Latin ligatures.
-- **Where a place's links lead is protected too.** If `~/.ssh/config` is a link
-  into a sync folder, the file it points at is refused under its own name.
+  including the expansions `ß` → `ss` and the Latin ligatures. Every character
+  APFS equates with a protected name's letters is folded; normalisation
+  (composed and decomposed `é`) is not, and identity covers it.
+- **Where a credential directory's links lead is protected too.** If
+  `~/.ssh/config` links into a sync folder, the file it points at is refused
+  under its own name, and so is creating it there if it is missing. A link to the
+  directory itself or above it (to `/`, to the home directory) protects only its
+  own location; otherwise everything would be refused. The links inside a
+  server's own directory are not followed; they may lead to work directories.
 - **Exact places match only themselves.** `/`, `/private/var` and the home
   directory refuse a work directory that *is* them, not everything below them.
 
@@ -106,17 +123,32 @@ This is a floor, not a boundary.
 
 - A hard link to a file inside a credential directory under another name, or a
   copy of a secret, is not detected by the Local policy.
-- Only the links directly inside a place are followed to their targets; a link
-  deeper inside (`~/.ssh/keys/work → …`) protects its own location, not where it
-  leads.
-- Only the home directory of the account the server runs as is protected as a
-  place. Another user's `.claude`, `.gemini` and `.codex` are ordinary
+- Only the links directly inside a credential or agent-control directory are
+  followed to their targets. A link deeper inside (`~/.ssh/keys/work → …`)
+  protects its own location, not where it leads. A link to a large directory
+  (`~/.aws/x → ~/Dropbox`) protects all of it; the refusal names the link.
+- Only the home directories of the account the server runs as are protected as
+  places. Another user's `.claude`, `.gemini` and `.codex` are ordinary
   directories to both policies (gem-agent and lagent refuse them by name in any
-  home); the Outbound policy still refuses another user's `.ssh`, `.aws` and the
+  home). The Outbound policy still refuses another user's `.ssh`, `.aws` and the
   rest by name.
 - On a filesystem with unstable inode numbers, identity can collide and refuse a
-  legitimate path. Unicode normalisation (`é` composed or decomposed) is
-  matched by identity only, so not for a place that does not exist yet.
+  legitimate path.
+- The name of a place that does not exist yet is compared without Unicode
+  normalisation below its deepest existing directory. That matters only for a
+  protected directory with non-ASCII names that has not been created yet; the
+  floor's names are ASCII.
+- **Windows is reasoned, not measured.** The handling follows the platform's
+  documented behaviour, compiles, and its name rules are unit-tested, but it has
+  not been run on Windows:
+  - every path goes through `filepath.Abs`, which is Windows' own normalisation;
+  - names are compared without their stream suffix (`.env::$DATA`) and
+    trailing dots and spaces;
+  - junctions are followed as links;
+  - a rooted link target (`\Users\u`) is on the link's drive.
+
+  8.3 short names (`CREDEN~1.JSO`) reach an existing place by identity, but get
+  past the Outbound policy's name-only rules.
 - An empty or relative home is treated as unknown and refuses everything.
 
 ## Documentation
