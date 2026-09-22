@@ -39,5 +39,6 @@ to [Semantic Versioning](https://semver.org/).
   2 ms, and about 0.33 s at worst (39 planted links, every form at the cap).
 - Windows handling (not run on Windows): `filepath.Abs` normalisation, stream
   suffixes and trailing dots in names, junctions, rooted link targets.
-- Replaces the nine per-server copies of `internal/workdir`, which compared
-  locations by name on a case-insensitive disk.
+- Built to replace the nine per-server copies of `internal/workdir`, which
+  compared locations by name on a case-insensitive disk; the servers move to
+  it one release at a time.
