@@ -76,6 +76,20 @@ if reason, why := r.LocalPath(raw, resolved); why != "" { /* refuse with reason 
 if reason, why := r.OutboundPath(raw, resolved); why != "" { /* refuse */ }
 ```
 
+Judge a path at the place it ends — before asking whether a file is there, so
+the answer does not tell which files exist. `pathguard.Where` returns that end:
+every link followed, a dangling one by its target, and for an existing path
+what `filepath.EvalSymlinks` returns. Do not take the last of `Forms` for it:
+the forms are de-duplicated, and a chain of links that comes back to a spelling
+already produced ends on an earlier one.
+
+```go
+where, ok := pathguard.Where(raw)
+if !ok { /* the chain of links does not end: refuse */ }
+if reason, why := r.LocalPath(raw, where); why != "" { /* refuse */ }
+// only now: does it exist, is it a regular file, ...
+```
+
 A call site that holds no `Resolver` uses the package functions, which build
 the policy from this process's home directories, as `Options.Home` empty does
 (an unknown home refuses):
@@ -147,8 +161,20 @@ This is a floor, not a boundary.
   not seen. Open the resolved path the check was given, and confine writes with
   `os.Root` or `O_NOFOLLOW`; a server's own containment is where that race is
   closed.
-- A hard link to a file inside a credential directory under another name, or a
-  copy of a secret, is not detected by the Local policy.
+- A hard link to a file inside a credential directory, or to a `.env`, under
+  another name, or a copy of a secret, is not detected by the Local policy: a
+  directory is compared by its own identity, not by the files in it. A hard link
+  to a file that is itself a floor place (`~/.netrc`) is caught by identity, and
+  only while it exists.
+- A path that climbs with `..` out through an entry of a credential directory
+  (`~/.ssh/ENTRY/../../Music/x`, or a link whose target is that spelling) is
+  judged where it lands, not where it passed, so the answer can show whether
+  `ENTRY` is a link and where it points.
+- `work_dir` is validated in organization ADR-022 §4's order — not found before
+  denied — so a `work_dir` naming a credential directory answers differently
+  depending on whether that directory exists.
+- A non-ASCII link-target name written in another Unicode normalisation is
+  caught by identity only while it exists.
 - Only the links directly inside a credential or agent-control directory are
   followed to their targets. A link deeper inside (`~/.ssh/keys/work → …`)
   protects its own location, not where it leads. A link to a large directory
@@ -176,6 +202,14 @@ This is a floor, not a boundary.
   8.3 short names (`CREDEN~1.JSO`) reach an existing place by identity, but get
   past the Outbound policy's name-only rules.
 - An empty or relative home is treated as unknown and refuses everything.
+- The account's own home is protected even when `HOME` names another directory
+  (`user.Current` reads the user database, and ignores `HOME` on darwin even
+  with `CGO_ENABLED=0`). A test that redirects `HOME` therefore still stats and
+  lists the real credential directories, read-only, unless it is built with
+  `-tags osusergo`.
+- Every check prepares the places again — it reads the credential directories
+  for their links — about 2.5 ms a check. A call judging hundreds of paths pays
+  that for each.
 
 ## Documentation
 

@@ -24,9 +24,29 @@ const maxHops = 40
 // A link's location on its own is not a form when it is only a prefix of the
 // path: /var → /private/var is met on the way to every darwin temporary
 // directory, and "/var" is not the path being asked about.
+//
+// The forms are de-duplicated, so the last one is not always where the walk
+// ends: a chain of links that comes back to a spelling already produced ends
+// on an earlier form. Where returns the end.
 func Forms(p string) []string {
-	f, _ := forms(p)
+	f, _, _ := walk(p)
 	return f
+}
+
+// Where returns where p ends — every link on it followed, a dangling one by its
+// target, and the rest joined by name — which for a path that exists is what
+// filepath.EvalSymlinks returns. ok is false when the chain of links does not
+// end, when it cannot be read, or whenever Forms would be refused (a NUL byte,
+// a form past the length bound); end is then "".
+//
+// It is the place a path is judged at before anything asks whether a file is
+// there, so that the answer does not depend on it.
+func Where(p string) (end string, ok bool) {
+	_, end, ok = walk(p)
+	if !ok || end == "" {
+		return "", false
+	}
+	return end, true
 }
 
 // maxPathBytes bounds every form, the given path and each one a link hop
@@ -51,11 +71,18 @@ func maxPathBytes() int {
 // ends at the first one: ".netrc\x00.safetensors" is judged as one string and
 // opened as another.
 func forms(p string) (out []string, ok bool) {
+	out, _, ok = walk(p)
+	return out, ok
+}
+
+// walk is forms with the end of the walk, which the de-duplicated list does
+// not always carry last.
+func walk(p string) (out []string, end string, ok bool) {
 	if p == "" {
-		return nil, true
+		return nil, "", true
 	}
 	if strings.IndexByte(p, 0) >= 0 {
-		return nil, false
+		return nil, "", false
 	}
 	seen := map[string]bool{}
 	add := func(s string) {
@@ -66,25 +93,25 @@ func forms(p string) (out []string, ok bool) {
 	}
 	cur, ok := absolute(p)
 	if !ok || len(cur) > maxPathBytes() {
-		return nil, false
+		return nil, "", false
 	}
 	add(filepath.Clean(cur))
 	for range maxHops {
 		r := step(cur)
 		if !r.ok {
-			return out, false
+			return out, "", false
 		}
 		if r.link == "" && !r.again {
 			add(r.final)
-			return out, true
+			return out, r.final, true
 		}
 		if len(r.next) > maxPathBytes() {
-			return out, false
+			return out, "", false
 		}
 		add(filepath.Clean(r.next))
 		cur = r.next
 	}
-	return out, false
+	return out, "", false
 }
 
 // getwd is os.Getwd; a test replaces it with one that fails.

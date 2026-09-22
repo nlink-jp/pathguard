@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `Where(p) (end string, ok bool)`: where a path ends — every link followed, a
+  dangling one by its target; for an existing path what `filepath.EvalSymlinks`
+  returns. The place to judge a path at before asking whether a file is there.
+  The last of `Forms` is not always that end: the forms are de-duplicated, so a
+  chain of links that comes back to an earlier spelling ends on an earlier form.
+
+### Documentation
+
+- Known limits recorded (README, RFP): a `..` climbing out through a credential
+  directory's entry is judged where it lands; `work_dir` validation keeps
+  ADR-022 §4's order; hard links into credential directories and to `.env`;
+  Unicode normalisation of link targets; tests that redirect `HOME` still list
+  the account's real credential directories unless built with `-tags osusergo`;
+  about 2.5 ms per check.
+
 ## [0.2.0] - 2026-09-22
 
 ### Added

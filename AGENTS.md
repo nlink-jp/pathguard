@@ -21,7 +21,7 @@ No Makefile — this is a library, not a binary.
 
 ```
 pathguard/
-├── forms.go        # Forms: resolve a path one link at a time; every hop is a form
+├── forms.go        # Forms: resolve a path one link at a time; every hop is a form. Where: the end of the walk
 ├── place.go        # Place, Kind, ServerDir, Check: anchored identity + folded name; link targets
 ├── fold.go         # fold/segKey/foldPath: Unicode case folding as APFS applies it; Windows names
 ├── floor.go        # the one list (Floor), ErrNoHome
@@ -50,6 +50,10 @@ pathguard/
 - **Test seams are package variables:** `statFn` (identity), `getwd`,
   `windowsNames` (Windows name rules on any platform), `workdir.accountHome`.
   Restore them in `t.Cleanup`.
+- **The place of a path is `Where`, never the last of `Forms`.** Forms are
+  de-duplicated, so a chain of links that comes back to an earlier spelling ends
+  on an earlier element (`TestWhereIsTheEndOfTheWalk`); consumers judge the place
+  before asking whether a file exists.
 - **Forms are whole paths, never a link's location alone.** `/var` is met on the
   way to every darwin temporary directory; as a form it would match the exact
   place `/private/var` and refuse every temp dir.

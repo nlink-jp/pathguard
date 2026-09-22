@@ -342,6 +342,17 @@ one had the same cause, so they were fixed at the cause rather than one by one:
   existing place by identity but pass the Outbound policy's name-only rules.
 - Another user's `.claude`, `.gemini` and `.codex` are not protected (decision
   4); the fixture records this as an intended difference from the runtimes.
+- Recorded 2026-09-22 after the consumers' existence sweep, and accepted on an
+  overall risk assessment (none reads a credential; a fix would re-release every
+  consumer): a `..` that climbs out through an entry of a credential directory
+  is judged where it lands, so the answer can show whether the entry is a link;
+  `work_dir` validation keeps ADR-022 §4's order, so a `work_dir` naming a
+  credential directory answers by whether it exists; a hard link to a file inside
+  a credential directory or to a `.env` is not refused; a non-ASCII link-target
+  name in another normalisation is caught only while it exists; each check
+  prepares the places again (about 2.5 ms). The one fixed then is the end of a
+  walk: `Where` returns it, because the last of `Forms` is not it when a chain of
+  links comes back to an earlier spelling.
 
 ### Keeping the runtimes' list and this one together
 
