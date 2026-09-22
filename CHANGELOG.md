@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-22
+
+### Added
+
+- `workdir.Resolver.CheckBeneath(dir)`: the places that refuse a work directory,
+  applied to a directory beneath it that a server actually uses — a workspace
+  `<work_dir>/<workspace_id>`, existing or not. Validating `work_dir` alone let
+  `work_dir=~/.config` with `workspace_id=gh` land in `~/.config/gh`.
+
+### Fixed
+
+- A path holding a NUL byte is refused as `unresolvable_path`. A path handed to
+  C ends at the first NUL, so `.netrc\x00.safetensors` was judged as one string
+  and opened as another.
+
 ## [0.1.0] - 2026-09-22
 
 ### Added
