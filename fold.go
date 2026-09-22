@@ -101,7 +101,9 @@ func sameName(a, b string) bool { return foldPath(a) == foldPath(b) }
 // withinFold reports whether path is root or lies under it, compared by
 // folded segments: a sibling that merely shares a prefix (/data-evil against
 // /data) is not inside.
-func withinFold(path, root string) bool {
-	fp, fr := foldPath(path), foldPath(root)
+func withinFold(path, root string) bool { return withinFolded(foldPath(path), foldPath(root)) }
+
+// withinFolded is withinFold on paths already folded.
+func withinFolded(fp, fr string) bool {
 	return fp == fr || strings.HasPrefix(fp, strings.TrimSuffix(fr, "/")+"/")
 }

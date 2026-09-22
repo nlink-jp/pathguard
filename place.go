@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 )
 
 // Kind says what a Place is, so a caller can choose places by what they are
@@ -89,7 +90,7 @@ func Check(places []Place, paths ...string) (reason, why string) {
 }
 
 func unresolvable() (reason, why string) {
-	return "unresolvable_path", "a chain of links on the path does not end, or a link on it cannot be read"
+	return "unresolvable_path", "a chain of links on the path does not end, a link on it cannot be read, or the path is longer than any system opens"
 }
 
 func checkViews(places []Place, views []view) (reason, why string) {
@@ -115,44 +116,80 @@ type anchor struct {
 	rest []string
 }
 
-// view is one form ready for comparison: its cleaned spelling, and an anchor
-// for every existing ancestor-or-self, deepest first.
+// view is one form ready for comparison: its cleaned spelling, that spelling
+// folded (foldPath), and an anchor for every existing ancestor-or-self,
+// deepest first.
 type view struct {
 	path    string
+	folded  string
 	anchors []anchor
 }
 
+// maxPathBytes bounds the cost of one check: every ancestor of a form is
+// stat'ed by its full path. A longer path cannot be opened by its path at all
+// — PATH_MAX is 4096 bytes on Linux and 1024 on darwin, and Windows allows
+// 32,767 UTF-16 units with the \\?\ prefix — so refusing it refuses nothing a
+// server could have opened.
+func maxPathBytes() int {
+	if runtime.GOOS == "windows" {
+		return 32 << 10
+	}
+	return 4096
+}
+
 func viewsOf(paths []string) ([]view, bool) {
+	for _, p := range paths {
+		if len(p) > maxPathBytes() {
+			return nil, false
+		}
+	}
 	var views []view
+	seen := map[string]bool{}
 	ok := true
 	for _, p := range paths {
 		f, fok := forms(p)
 		ok = ok && fok
 		for _, form := range f {
-			views = append(views, look(form))
+			if !seen[form] {
+				seen[form] = true
+				views = append(views, look(form))
+			}
 		}
 	}
 	return views, ok
 }
 
+// look folds the form's segments once and shares them: an anchor's rest is a
+// slice of that one array, read and never written, so a form of n segments
+// costs n stats and no copying.
 func look(form string) view {
 	v := view{path: filepath.Clean(form)}
-	var rest []string
+	v.folded = foldPath(v.path)
+	var keys []string
 	for cur := v.path; ; {
-		if fi, err := statFn(cur); err == nil {
-			v.anchors = append(v.anchors, anchor{info: fi, rest: append([]string(nil), rest...)})
-		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
+			break
+		}
+		keys = append(keys, segKey(filepath.Base(cur)))
+		cur = parent
+	}
+	slices.Reverse(keys)
+	cur := v.path
+	for i := len(keys); ; i-- {
+		if fi, err := statFn(cur); err == nil {
+			v.anchors = append(v.anchors, anchor{info: fi, rest: keys[i:len(keys):len(keys)]})
+		}
+		if i == 0 {
 			return v
 		}
-		rest = append([]string{segKey(filepath.Base(cur))}, rest...)
-		cur = parent
+		cur = filepath.Dir(cur)
 	}
 }
 
 // prepared is a Place looked up once for one check: every form of its path,
-// for the name comparison, and each form's deepest anchor, for identity.
+// folded, for the name comparison, and each form's deepest anchor, for
+// identity.
 type prepared struct {
 	Place
 	spellings []string
@@ -179,8 +216,9 @@ func prepareOne(pl Place) prepared {
 	p := prepared{Place: pl}
 	fs, _ := forms(pl.Path)
 	for _, f := range fs {
-		p.spellings = append(p.spellings, f)
-		if v := look(f); len(v.anchors) > 0 {
+		v := look(f)
+		p.spellings = append(p.spellings, v.folded)
+		if len(v.anchors) > 0 {
 			p.anchors = append(p.anchors, v.anchors[0])
 		}
 	}
@@ -267,7 +305,7 @@ func (pl prepared) holds(v view) bool {
 		}
 	}
 	for _, s := range pl.spellings {
-		if pl.Exact && sameName(v.path, s) || !pl.Exact && withinFold(v.path, s) {
+		if pl.Exact && v.folded == s || !pl.Exact && withinFolded(v.folded, s) {
 			return true
 		}
 	}

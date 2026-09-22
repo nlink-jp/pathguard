@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -253,6 +255,51 @@ func BenchmarkLocalCheck(b *testing.B) {
 		b.Fatal(err)
 	}
 	p := filepath.Join(home, "works", "project", "data", "input.csv")
+	b.ResetTimer()
+	for range b.N {
+		local.Check(p, p)
+	}
+}
+
+// A path longer than any system opens is refused before it costs anything.
+func TestAPathLongerThanAnySystemOpensIsRefused(t *testing.T) {
+	long := "/" + strings.Repeat("a/", maxPathBytes()/2) + "x"
+	if reason, _ := localOf(t, realTemp(t)).Check(long); reason != "unresolvable_path" {
+		t.Errorf("reason = %q, want unresolvable_path", reason)
+	}
+}
+
+// One form costs its segments' stats and nothing quadratic: an agent controls
+// the path, and a prepend per segment made a 120 KB path cost 14 s.
+func TestLookingAtALongPathAllocatesLinearly(t *testing.T) {
+	p := "/" + strings.Repeat("a/", (maxPathBytes()-2)/2) + "x"
+	if len(p) > maxPathBytes() {
+		t.Fatalf("test path of %d bytes exceeds the cap", len(p))
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	look(p)
+	runtime.ReadMemStats(&after)
+	segs := len(p) / 2
+	// Each ancestor's stat copies its path (about len(p)/2 on average); a
+	// prepend per segment adds 16 bytes × segs²/2 on top.
+	if got, limit := after.TotalAlloc-before.TotalAlloc, uint64(segs*len(p)); got > limit {
+		t.Errorf("look allocated %d bytes for %d segments, over %d", got, segs, limit)
+	}
+}
+
+// The worst an agent can do with one path argument: the longest path the cap
+// lets through, none of it existing.
+func BenchmarkLocalCheckLongestPath(b *testing.B) {
+	home, err := filepath.EvalSymlinks(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	local, err := Local(home)
+	if err != nil {
+		b.Fatal(err)
+	}
+	p := "/" + strings.Repeat("a/", (maxPathBytes()-2)/2) + "x"
 	b.ResetTimer()
 	for range b.N {
 		local.Check(p, p)

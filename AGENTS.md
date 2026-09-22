@@ -72,9 +72,14 @@ pathguard/
 - **A place without an absolute path is `ErrBadPlace`,** and refuses every
   call; an empty `Reason`/`Why` gets default words. An empty `why` means
   "allowed" to every caller, so a place must never produce one.
-- **One check costs about 2 ms** (`BenchmarkLocalCheck`, Apple Silicon): every
-  place's forms and ancestors are looked up per call, and nothing is cached, on
-  purpose.
+- **One check costs about 2 ms** (`BenchmarkLocalCheck`, Apple Silicon), and at
+  most about 17 ms for the longest path the cap lets through
+  (`BenchmarkLocalCheckLongestPath`). Every place's forms and ancestors are
+  looked up per call, and nothing is cached, on purpose. The agent controls the
+  path, so keep `look` linear: an anchor's `rest` is a shared slice, never
+  copied. A prepend per segment once made a 120 KB path cost 14 s, and
+  `TestLookingAtALongPathAllocatesLinearly` guards it. `maxPathBytes` is
+  `PATH_MAX` (4096) on Unix and 32 KiB on Windows.
 - **Windows code is reasoned, not measured** (no Windows machine): `absolute`
   runs every path through `filepath.Abs`, `joinTarget` puts a rooted target on
   the link's drive, `linkMode` follows junctions, `windowsName` drops stream

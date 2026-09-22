@@ -1,6 +1,6 @@
 # RFP: pathguard — one judgement of whether a path may be touched
 
-- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies); implementation reviewed independently twice the same day, findings folded in (§ "What the implementation reviews changed")
+- Status: Accepted (2026-09-22) — revised after two independent design reviews and the operator's decisions of 2026-09-22 (two layers in one module; runtimes later; local versus outbound policies); implementation reviewed independently three times the same day, findings folded in (§ "What the implementation reviews changed")
 - Date: 2026-09-22
 - Series: lib-series
 - Amends (on acceptance): organization ADR-021 §4, §7 and §10, through a new organization ADR-022
@@ -193,9 +193,12 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    resolver refuses every call, saying why.
 6. **Cost is bounded per call, nothing is cached.** Per check, each place's own
    forms and their ancestors are looked up once, each credential directory is
-   listed once for its links, and each form's ancestors are walked once. That is
-   about 2 ms per check on Apple Silicon (`BenchmarkLocalCheck`), and
-   comparisons are done in memory. A cache would miss a place created after it
+   listed once for its links, and each form's ancestors are walked once, in
+   time linear in its length. A path longer than any system opens (4096 bytes;
+   32 KiB on Windows) is refused before any of that. Measured on Apple Silicon:
+   about 2 ms per check for a realistic path (`BenchmarkLocalCheck`), about
+   17 ms for the longest the cap lets through (`BenchmarkLocalCheckLongestPath`).
+   Comparisons are done in memory. A cache would miss a place created after it
    was filled.
 7. **Standard library only, pinned by a test.** Two consumers promise no
    third-party dependencies (reworded to allow nlink-jp modules, per the
@@ -204,7 +207,7 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
 
 ### What the implementation reviews changed
 
-Two independent reviews of the implementation, before release, found holes and
+Three independent reviews of the implementation, before release, found holes and
 test gaps. Every fix is checked by a mutation that a test kills, except
 `filepath.Abs` on Windows, which cannot run here.
 
@@ -262,6 +265,20 @@ one had the same cause, so they were fixed at the cause rather than one by one:
   - A working directory that cannot be read now refuses a relative path.
   - The account's own home is protected when `$HOME` names another.
 
+**Third review** — every earlier finding confirmed closed, and one medium hole:
+
+- **One path argument could cost seconds.** `look` built each ancestor's
+  remaining names by prepending, which is quadratic in the number of segments,
+  and no length was capped. A 120 KB path cost 14.5 s per check. The names are
+  now folded once and shared, and a path longer than any system opens is refused
+  (decision 6).
+- **Doc: the check-then-use race was not written down.** It is now an accepted
+  limit.
+- **Not taken:** a test seam over the Windows path branches (`absolute`,
+  `joinTarget`). `filepath`'s Windows behaviour (`VolumeName`, `Abs`) exists
+  only on Windows, so a seam on darwin would test a simulation, not the code.
+  The docs say these branches are reasoned.
+
 
 ### What changes for the servers (each CHANGELOG says it)
 
@@ -282,6 +299,9 @@ one had the same cause, so they were fixed at the cause rather than one by one:
 
 ### Accepted limits (the floor stays a floor)
 
+- A verdict is a snapshot: a link created between the check and the open is not
+  seen. Callers open the resolved path they checked and confine writes (`os.Root`,
+  `O_NOFOLLOW`); the servers' own containment is where that race is closed.
 - A hard link to a file inside a floor **directory** (e.g. `~/.ssh/id_rsa`) under
   another name, or a copy of a secret, is not detected by the Local policy.
 - On a filesystem with unstable inode numbers, identity can collide and refuse a

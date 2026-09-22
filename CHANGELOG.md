@@ -34,6 +34,8 @@ to [Semantic Versioning](https://semver.org/).
   refuse everything.
 - With `Options.Home` empty, the account's own home is protected as well when
   `$HOME` names another.
+- A path longer than any system opens (4096 bytes; 32 KiB on Windows) is
+  refused, and one check costs time linear in the path's length.
 - Windows handling (not run on Windows): `filepath.Abs` normalisation, stream
   suffixes and trailing dots in names, junctions, rooted link targets.
 - Replaces the nine per-server copies of `internal/workdir`, which compared

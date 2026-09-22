@@ -116,11 +116,18 @@ System locations refuse a work directory, not a file.
   server's own directory are not followed; they may lead to work directories.
 - **Exact places match only themselves.** `/`, `/private/var` and the home
   directory refuse a work directory that *is* them, not everything below them.
+- **A path longer than any system opens is refused** (`unresolvable_path`): over
+  4096 bytes, or 32 KiB on Windows. That bounds what one path argument can cost:
+  about 2 ms for a realistic path, under 20 ms at the limit.
 
 ## Limits
 
 This is a floor, not a boundary.
 
+- **A verdict is a snapshot.** A link created between the check and the open is
+  not seen. Open the resolved path the check was given, and confine writes with
+  `os.Root` or `O_NOFOLLOW`; a server's own containment is where that race is
+  closed.
 - A hard link to a file inside a credential directory under another name, or a
   copy of a secret, is not detected by the Local policy.
 - Only the links directly inside a credential or agent-control directory are
