@@ -250,6 +250,21 @@ func (r Resolver) denied(dir, resolved string) (reason, why string) {
 	return "", ""
 }
 
+// CheckBeneath reports why dir, a directory beneath a validated work
+// directory, may not be used — a workspace <work_dir>/<workspace_id>,
+// typically, which may not exist yet — or nil. It applies the places that
+// refuse a work directory to the directory actually used: work_dir=~/.config
+// with workspace_id=gh is ~/.config/gh, and validating work_dir alone passed
+// it. The error is work_dir_denied, with details {path, reason}.
+func (r Resolver) CheckBeneath(dir string) error {
+	if reason, why := r.denied(dir, dir); why != "" {
+		e := newErr(CodeDenied, "%q is refused: %s", dir, why)
+		e.Details = map[string]any{"path": dir, "reason": reason}
+		return e
+	}
+	return nil
+}
+
 // LocalPath reports why a file a call names may not be read or written on this
 // machine (pathguard.Local plus the protected directories), or two empty
 // strings. Pass the path as the caller gave it and its resolved form; for a

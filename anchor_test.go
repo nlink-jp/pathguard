@@ -387,3 +387,17 @@ func BenchmarkLocalCheckLinkChainAtTheCap(b *testing.B) {
 		local.Check(p, p)
 	}
 }
+
+// A path holding a NUL byte is judged as one string and, once handed to C,
+// opened as another (C stops at the NUL): ".netrc\x00.safetensors" opens
+// .netrc. It is refused as unresolvable by every entry point.
+func TestAPathHoldingANULIsRefused(t *testing.T) {
+	home := realTemp(t)
+	p := filepath.Join(home, ".netrc") + "\x00.safetensors"
+	if reason, _ := localOf(t, home).Check(p); reason != "unresolvable_path" {
+		t.Errorf("Local.Check reason = %q, want unresolvable_path", reason)
+	}
+	if reason, _ := Check(floorOf(t, home), "/srv/x\x00y"); reason != "unresolvable_path" {
+		t.Errorf("Check reason = %q, want unresolvable_path", reason)
+	}
+}

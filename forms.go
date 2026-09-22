@@ -43,12 +43,19 @@ func maxPathBytes() int {
 }
 
 // forms is Forms with a verdict on whether the chain of links ended. A chain
-// longer than maxHops, a link that cannot be read, or a form longer than
-// maxPathBytes is ok=false, and the caller refuses rather than guess where
-// the path leads.
+// longer than maxHops, a link that cannot be read, a form longer than
+// maxPathBytes, or a path holding a NUL byte is ok=false, and the caller
+// refuses rather than guess where the path leads.
+//
+// A NUL is in no path any system opens, but a path handed to C (C.CString)
+// ends at the first one: ".netrc\x00.safetensors" is judged as one string and
+// opened as another.
 func forms(p string) (out []string, ok bool) {
 	if p == "" {
 		return nil, true
+	}
+	if strings.IndexByte(p, 0) >= 0 {
+		return nil, false
 	}
 	seen := map[string]bool{}
 	add := func(s string) {

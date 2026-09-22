@@ -389,3 +389,35 @@ func TestAProtectedPlaceWithoutAnAbsolutePathRefusesEveryCall(t *testing.T) {
 		t.Errorf("LocalPath reason = %q, want unconfigured", reason)
 	}
 }
+
+// The directory actually used — <work_dir>/<workspace_id> — gets the places
+// that refuse a work directory: work_dir=~/.config with workspace_id=gh is
+// ~/.config/gh, a credential directory, whether it exists yet or not.
+func TestCheckBeneathAppliesTheWorkDirPlacesToTheDirectoryUsed(t *testing.T) {
+	home := realTemp(t)
+	srv := filepath.Join(home, ".config", "some-server")
+	r := NewResolver(Options{Home: home, Protected: []pathguard.Place{pathguard.ServerDir(srv, "")}})
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for dir, reason := range map[string]string{
+		filepath.Join(home, ".config", "gh"):        "sensitive_path", // exists
+		filepath.Join(home, ".config", "gcloud"):    "sensitive_path", // does not exist yet
+		filepath.Join(home, ".config", "gem-agent"): "sensitive_path",
+		srv:                                     "server_dir",
+		home:                                    "home_dir",
+		filepath.Join(home, "project") + "\x00": "unresolvable_path",
+	} {
+		var e *Error
+		if err := r.CheckBeneath(dir); !errors.As(err, &e) || e.Code != CodeDenied || e.Details["reason"] != reason {
+			t.Errorf("CheckBeneath(%q) = %v, want %s with reason %s", dir, err, CodeDenied, reason)
+		}
+	}
+	if err := r.CheckBeneath(filepath.Join(home, "project", "ws1")); err != nil {
+		t.Errorf("an ordinary workspace was refused: %v", err)
+	}
+	var zero Resolver
+	if err := zero.CheckBeneath(filepath.Join(home, "project", "ws1")); err == nil {
+		t.Error("a zero Resolver passed a workspace")
+	}
+}
