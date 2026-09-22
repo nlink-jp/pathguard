@@ -145,6 +145,7 @@ func (r Resolver) Resolve(arg string, meta map[string]json.RawMessage) (string, 
 func (r Resolver) Validate(dir string) (string, error)
 func (r Resolver) LocalPath(raw, resolved string) (reason, why string)    // Local + Protected
 func (r Resolver) OutboundPath(raw, resolved string) (reason, why string) // Outbound + Protected
+func (r Resolver) CheckBeneath(dir string) error                          // v0.2.0: <work_dir>/<workspace_id>
 
 // For call sites that hold no Resolver (voice-scribe's transcribe today): the
 // policy is built from this process's home; an unknown home refuses.

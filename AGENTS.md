@@ -85,6 +85,12 @@ pathguard/
   `ancestors`, `parent` and `child` are the linear substitutes for
   `filepath.Dir`/`Join`; `TestTheLinearWalksAgreeWithFilepath` pins them to the
   same strings. Linearity itself is shown by the benchmarks, not a test.
+- **`CheckBeneath` is the check for the directory a server actually uses** —
+  `<work_dir>/<workspace_id>`, which may not exist yet. Validating `work_dir`
+  alone let `work_dir=~/.config, workspace_id=gh` land in `~/.config/gh`. Each
+  consumer's workspace manager takes it as a required constructor argument.
+- **A NUL byte in a path is unresolvable.** C stops at the first NUL, so a
+  judged Go string and the opened C string would differ.
 - **Nothing is cached, on purpose:** every place's forms and ancestors are
   looked up per call. The agent controls the path, so keep `look` linear: an
   anchor's `rest` is a shared slice, never copied. A prepend per segment once

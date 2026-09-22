@@ -50,6 +50,18 @@ if errors.As(err, &e) {
 データベースにあるアカウント自身のホームについても作る。`HOME` をほかへ向けて起動したサーバーでも、
 本物の `~/.ssh` は守られる。
 
+### 呼び出しが実際に使うディレクトリ
+
+ワークスペースは作業ディレクトリの下のディレクトリ `<work_dir>/<workspace_id>` で、`work_dir` の検査だけでは
+覆えない。`work_dir=~/.config` と `workspace_id=gh` は `~/.config/gh` になる。作る前、使う前に確かめる ——
+まだ存在しなくてよい:
+
+```go
+if err := r.CheckBeneath(filepath.Join(dir, workspaceID)); err != nil {
+    // *workdir.Error、work_dir_denied、details {"path", "reason"}
+}
+```
+
 ### 呼び出しが名指すファイル
 
 ```go
@@ -102,6 +114,8 @@ if why := workdir.SensitiveOutbound(raw, resolved); why != "" { /* 拒む */ } /
   その指す先のファイルをそちらの名前で渡しても拒み、まだ無いならそこに作ることも拒む。そのディレクトリ
   自身やその上（`/`、ホーム）を指すリンクは、リンク自身の位置だけを守る。そうしないとすべてを拒んでしまう。
   サーバー自身のディレクトリの中のリンクはたどらない。作業ディレクトリを指していることがあるため。
+- **NUL バイトを含むパスは拒む**（`unresolvable_path`）。どのシステムも開けないが、C に渡したパスは NUL で
+  終わる。`.netrc\x00.safetensors` は、ある文字列として判定され、別の文字列として開かれてしまう。
 - **その場所そのものだけの項目は、そのものとだけ比べる。** `/`、`/private/var`、ホームは、それ*自体*である
   作業ディレクトリを拒み、その下すべては拒まない。
 - **どのシステムも開けない長さのパスは拒む**（`unresolvable_path`）: 4096 バイト、Windows では 32 KiB を

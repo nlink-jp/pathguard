@@ -53,6 +53,19 @@ environment names (`$HOME`) and, when it differs, for the account's own home
 from the user database as well: a server started with `HOME` pointing
 elsewhere still protects the real `~/.ssh`.
 
+### The directory a call actually uses
+
+A workspace is a directory beneath the work directory, `<work_dir>/<workspace_id>`,
+and validating `work_dir` alone does not cover it: `work_dir=~/.config` with
+`workspace_id=gh` is `~/.config/gh`. Check it before making or using it — it may
+not exist yet:
+
+```go
+if err := r.CheckBeneath(filepath.Join(dir, workspaceID)); err != nil {
+    // *workdir.Error, work_dir_denied, details {"path", "reason"}
+}
+```
+
 ### A file the call names
 
 ```go
@@ -114,6 +127,9 @@ System locations refuse a work directory, not a file.
   directory itself or above it (to `/`, to the home directory) protects only its
   own location; otherwise everything would be refused. The links inside a
   server's own directory are not followed; they may lead to work directories.
+- **A path holding a NUL byte is refused** (`unresolvable_path`). No system opens
+  one, but a path handed to C ends at the NUL: `.netrc\x00.safetensors` would be
+  judged as one string and opened as another.
 - **Exact places match only themselves.** `/`, `/private/var` and the home
   directory refuse a work directory that *is* them, not everything below them.
 - **A path longer than any system opens is refused** (`unresolvable_path`): over
