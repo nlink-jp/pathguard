@@ -193,11 +193,14 @@ server's one sentence. slack-mcp-extender moves to the shared order and wording.
    resolver refuses every call, saying why.
 6. **Cost is bounded per call, nothing is cached.** Per check, each place's own
    forms and their ancestors are looked up once, each credential directory is
-   listed once for its links, and each form's ancestors are walked once, in
-   time linear in its length. A path longer than any system opens (4096 bytes;
-   32 KiB on Windows) is refused before any of that. Measured on Apple Silicon:
-   about 2 ms per check for a realistic path (`BenchmarkLocalCheck`), about
-   17 ms for the longest the cap lets through (`BenchmarkLocalCheckLongestPath`).
+   listed once for its links, and each form's ancestors are walked once, with
+   work linear in the form's length apart from the stats themselves. A form
+   longer than any system opens (4096 bytes; 32 KiB on Windows), whether given
+   or produced by a link hop, refuses the path before anything is looked at.
+   Measured on Apple Silicon: about 2 ms per check for a realistic path
+   (`BenchmarkLocalCheck`) and for the longest the cap lets through
+   (`BenchmarkLocalCheckLongestPath`), and about 0.33 s for the worst case —
+   39 planted links, every form at the cap (`BenchmarkLocalCheckLinkChainAtTheCap`).
    Comparisons are done in memory. A cache would miss a place created after it
    was filled.
 7. **Standard library only, pinned by a test.** Two consumers promise no
@@ -278,6 +281,21 @@ one had the same cause, so they were fixed at the cause rather than one by one:
   `joinTarget`). `filepath`'s Windows behaviour (`VolumeName`, `Abs`) exists
   only on Windows, so a seam on darwin would test a simulation, not the code.
   The docs say these branches are reasoned.
+
+**Re-check of the third review's fix** — the cap covered only the given path:
+
+- **A link hop could still grow a form without bound.** A 97-byte path through
+  one link whose target was a 1 KB relative path produced 40 KB forms over 40
+  hops and cost 21 s. `look` also still re-cleaned every prefix
+  (`filepath.Dir`), which is quadratic. The cap now applies to every form in
+  `forms`, and a path that does not resolve is refused before any form is
+  looked at. `look` and `step` walk by substrings (`ancestors`, `parent`,
+  `child`), pinned to `filepath`'s strings by a test.
+- **Considered and rejected:** stopping `look` at the first ancestor that does
+  not exist, which would have cut the worst case further. Existence is not
+  monotone along a path: `/.vol/<dev>` does not stat while `/.vol/<dev>/<ino>`
+  does (measured), so the anchor that closes the second review's `/.vol` hole
+  would be lost.
 
 
 ### What changes for the servers (each CHANGELOG says it)

@@ -117,8 +117,11 @@ System locations refuse a work directory, not a file.
 - **Exact places match only themselves.** `/`, `/private/var` and the home
   directory refuse a work directory that *is* them, not everything below them.
 - **A path longer than any system opens is refused** (`unresolvable_path`): over
-  4096 bytes, or 32 KiB on Windows. That bounds what one path argument can cost:
-  about 2 ms for a realistic path, under 20 ms at the limit.
+  4096 bytes, or 32 KiB on Windows. The limit applies to every form, including
+  the longer ones link hops produce. That bounds what one path argument can
+  cost: about 2 ms for a realistic path or the longest one allowed, and about a
+  third of a second for the worst case — a chain of 39 links planted to stretch
+  every form to the limit.
 
 ## Limits
 

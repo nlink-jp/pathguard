@@ -2,9 +2,11 @@ package pathguard
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -300,6 +302,86 @@ func BenchmarkLocalCheckLongestPath(b *testing.B) {
 		b.Fatal(err)
 	}
 	p := "/" + strings.Repeat("a/", (maxPathBytes()-2)/2) + "x"
+	b.ResetTimer()
+	for range b.N {
+		local.Check(p, p)
+	}
+}
+
+// ancestors, parent and child are filepath.Dir and filepath.Join without the
+// Clean of every prefix; they must give the same strings.
+func TestTheLinearWalksAgreeWithFilepath(t *testing.T) {
+	for _, p := range []string{"/", "/a", "/a/b/c", "/private/var/folders/x", "/ſ/ﬆ/K", "/a/b/c/d/e/f/g/h"} {
+		var want []string
+		for cur := p; ; cur = filepath.Dir(cur) {
+			want = append(want, cur)
+			if filepath.Dir(cur) == cur {
+				break
+			}
+		}
+		if got := ancestors(p); !slices.Equal(got, want) {
+			t.Errorf("ancestors(%q) = %q, want %q", p, got, want)
+		}
+		if got, want := parent(p), filepath.Dir(p); got != want {
+			t.Errorf("parent(%q) = %q, want %q", p, got, want)
+		}
+		if got, want := child(p, "x"), filepath.Join(p, "x"); got != want {
+			t.Errorf("child(%q, x) = %q, want %q", p, got, want)
+		}
+	}
+}
+
+// A short path through a link whose target is a long relative path grows by
+// the target on every hop. Every form is capped, so the chain is refused as
+// soon as a form outgrows the cap, not after 40 hops of ever longer forms (a
+// 97-byte path cost 21 s).
+func TestALinkThatGrowsThePathPastTheCapIsRefusedEarly(t *testing.T) {
+	dir := realTemp(t)
+	link(t, strings.Repeat("x/", 499)+"x", filepath.Join(dir, "x"))
+	p := filepath.Join(dir, "x", "y")
+	f, ok := forms(p)
+	if ok {
+		t.Fatalf("forms(%q) ended; want refused", p)
+	}
+	for _, form := range f {
+		if len(form) > maxPathBytes() {
+			t.Errorf("a form of %d bytes was produced, over the cap", len(form))
+		}
+	}
+	stats := 0
+	saved := statFn
+	statFn = func(s string) (os.FileInfo, error) { stats++; return saved(s) }
+	t.Cleanup(func() { statFn = saved })
+	if reason, _ := localOf(t, realTemp(t)).Check(p); reason != "unresolvable_path" {
+		t.Errorf("reason = %q, want unresolvable_path", reason)
+	}
+	if stats != 0 {
+		t.Errorf("the refused path was still looked at: %d stats", stats)
+	}
+}
+
+// The worst the cap still allows: the longest chain of links that still ends
+// (maxHops-1, planted in a work directory), every form just under the cap, so
+// every form is walked and looked at.
+func BenchmarkLocalCheckLinkChainAtTheCap(b *testing.B) {
+	dir, err := filepath.EvalSymlinks(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := range maxHops - 1 {
+		if err := os.Symlink(filepath.Join(dir, fmt.Sprintf("l%02d", i+1)), filepath.Join(dir, fmt.Sprintf("l%02d", i))); err != nil {
+			b.Skip(err)
+		}
+	}
+	head := filepath.Join(dir, "l00")
+	p := head + "/" + strings.Repeat("a/", (maxPathBytes()-len(head)-3)/2) + "x"
+	if f, ok := forms(p); !ok || len(f) < maxHops {
+		b.Fatalf("forms: %d, ended %v; want the whole chain, ended", len(f), ok)
+	}
+	local, err := Local(dir)
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		local.Check(p, p)

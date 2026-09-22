@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 )
 
 // Kind says what a Place is, so a caller can choose places by what they are
@@ -125,66 +124,64 @@ type view struct {
 	anchors []anchor
 }
 
-// maxPathBytes bounds the cost of one check: every ancestor of a form is
-// stat'ed by its full path. A longer path cannot be opened by its path at all
-// — PATH_MAX is 4096 bytes on Linux and 1024 on darwin, and Windows allows
-// 32,767 UTF-16 units with the \\?\ prefix — so refusing it refuses nothing a
-// server could have opened.
-func maxPathBytes() int {
-	if runtime.GOOS == "windows" {
-		return 32 << 10
-	}
-	return 4096
-}
-
 func viewsOf(paths []string) ([]view, bool) {
+	// Every path's forms are made before any is looked at: one that does not
+	// resolve refuses the call, and looking would be wasted work.
+	var all []string
 	for _, p := range paths {
-		if len(p) > maxPathBytes() {
+		f, ok := forms(p)
+		if !ok {
 			return nil, false
 		}
+		all = append(all, f...)
 	}
 	var views []view
 	seen := map[string]bool{}
-	ok := true
-	for _, p := range paths {
-		f, fok := forms(p)
-		ok = ok && fok
-		for _, form := range f {
-			if !seen[form] {
-				seen[form] = true
-				views = append(views, look(form))
-			}
+	for _, form := range all {
+		if !seen[form] {
+			seen[form] = true
+			views = append(views, look(form))
 		}
 	}
-	return views, ok
+	return views, true
 }
 
 // look folds the form's segments once and shares them: an anchor's rest is a
-// slice of that one array, read and never written, so a form of n segments
-// costs n stats and no copying.
+// slice of that one array, read and never written, and every ancestor is a
+// substring of the form (ancestors), so a form of n segments costs n stats
+// and no quadratic work. The agent controls the path; keep it that way.
 func look(form string) view {
 	v := view{path: filepath.Clean(form)}
 	v.folded = foldPath(v.path)
-	var keys []string
-	for cur := v.path; ; {
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-		keys = append(keys, segKey(filepath.Base(cur)))
-		cur = parent
+	anc := ancestors(v.path)
+	keys := make([]string, len(anc)-1)
+	for k := 0; k < len(anc)-1; k++ {
+		keys[len(keys)-1-k] = segKey(filepath.Base(anc[k]))
 	}
-	slices.Reverse(keys)
-	cur := v.path
-	for i := len(keys); ; i-- {
-		if fi, err := statFn(cur); err == nil {
+	for k, a := range anc {
+		if fi, err := statFn(a); err == nil {
+			i := len(keys) - k
 			v.anchors = append(v.anchors, anchor{info: fi, rest: keys[i:len(keys):len(keys)]})
 		}
-		if i == 0 {
-			return v
-		}
-		cur = filepath.Dir(cur)
 	}
+	return v
+}
+
+// ancestors returns a cleaned absolute path and every directory above it,
+// deepest first, ending at the root — what repeated filepath.Dir gives, as
+// substrings of p rather than a Clean of every prefix.
+func ancestors(p string) []string {
+	vol := len(filepath.VolumeName(p))
+	out := []string{p}
+	for i := len(p) - 1; i > vol; i-- {
+		if os.IsPathSeparator(p[i]) {
+			out = append(out, p[:i])
+		}
+	}
+	if len(p) > vol+1 && os.IsPathSeparator(p[vol]) {
+		out = append(out, p[:vol+1])
+	}
+	return out
 }
 
 // prepared is a Place looked up once for one check: every form of its path,

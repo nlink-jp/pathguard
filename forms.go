@@ -29,9 +29,23 @@ func Forms(p string) []string {
 	return f
 }
 
+// maxPathBytes bounds every form, the given path and each one a link hop
+// produces: a short path through a link with a long relative target grows by
+// the target's length on every hop, and every form is walked and looked at.
+// A longer path cannot be opened by its path at all — PATH_MAX is 4096 bytes
+// on Linux and 1024 on darwin, and Windows allows 32,767 UTF-16 units with the
+// \\?\ prefix — so refusing it refuses nothing a server could have opened.
+func maxPathBytes() int {
+	if runtime.GOOS == "windows" {
+		return 32 << 10
+	}
+	return 4096
+}
+
 // forms is Forms with a verdict on whether the chain of links ended. A chain
-// longer than maxHops, or a link that cannot be read, is ok=false, and the
-// caller refuses rather than guess where the path leads.
+// longer than maxHops, a link that cannot be read, or a form longer than
+// maxPathBytes is ok=false, and the caller refuses rather than guess where
+// the path leads.
 func forms(p string) (out []string, ok bool) {
 	if p == "" {
 		return nil, true
@@ -44,7 +58,7 @@ func forms(p string) (out []string, ok bool) {
 		}
 	}
 	cur, ok := absolute(p)
-	if !ok {
+	if !ok || len(cur) > maxPathBytes() {
 		return nil, false
 	}
 	add(filepath.Clean(cur))
@@ -56,6 +70,9 @@ func forms(p string) (out []string, ok bool) {
 		if r.link == "" && !r.again {
 			add(r.final)
 			return out, true
+		}
+		if len(r.next) > maxPathBytes() {
+			return out, false
 		}
 		add(filepath.Clean(r.next))
 		cur = r.next
@@ -117,7 +134,8 @@ type stepResult struct {
 // walked, which holds no link, so in p2/../q the link p2 is followed before
 // anything climbs out of it. It stops at the first link, or at the first
 // component that does not exist — nothing below that can be a link, so the
-// rest is joined by name.
+// rest is joined by name. walked is extended and shortened as a string
+// (child, parent), never re-cleaned, so a walk is linear in p's length.
 func step(p string) stepResult {
 	sep := string(filepath.Separator)
 	vol := filepath.VolumeName(p)
@@ -128,10 +146,10 @@ func step(p string) stepResult {
 		case ".":
 			continue
 		case "..":
-			walked = filepath.Dir(walked)
+			walked = parent(walked)
 			continue
 		}
-		cand := filepath.Join(walked, comp)
+		cand := child(walked, comp)
 		fi, err := os.Lstat(cand)
 		if err != nil {
 			rest := filepath.Clean(filepath.Join(append([]string{cand}, parts[i+1:]...)...))
@@ -172,6 +190,29 @@ func step(p string) stepResult {
 		return stepResult{link: cand, next: next, ok: true}
 	}
 	return stepResult{final: filepath.Clean(walked), ok: true}
+}
+
+// child is dir/comp for a walked directory and one component, which holds no
+// separator and is neither "." nor "..": filepath.Join without its Clean.
+func child(dir, comp string) string {
+	if os.IsPathSeparator(dir[len(dir)-1]) {
+		return dir + comp
+	}
+	return dir + string(filepath.Separator) + comp
+}
+
+// parent is filepath.Dir of a walked directory, which is clean: its prefix up
+// to the last separator, or the root.
+func parent(dir string) string {
+	vol := len(filepath.VolumeName(dir))
+	i := len(dir) - 1
+	for i > vol && !os.IsPathSeparator(dir[i]) {
+		i--
+	}
+	if i <= vol {
+		return dir[:vol+1]
+	}
+	return dir[:i]
 }
 
 // split breaks a path into components on either separator, dropping empty

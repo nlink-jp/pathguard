@@ -72,9 +72,19 @@ pathguard/
 - **A place without an absolute path is `ErrBadPlace`,** and refuses every
   call; an empty `Reason`/`Why` gets default words. An empty `why` means
   "allowed" to every caller, so a place must never produce one.
-- **One check costs about 2 ms** (`BenchmarkLocalCheck`, Apple Silicon), and at
-  most about 17 ms for the longest path the cap lets through
-  (`BenchmarkLocalCheckLongestPath`). Every place's forms and ancestors are
+- **One check costs about 2 ms** (`BenchmarkLocalCheck`, Apple Silicon), also
+  for the longest path the cap lets through (`BenchmarkLocalCheckLongestPath`),
+  and about 0.33 s for the worst case (`BenchmarkLocalCheckLinkChainAtTheCap`:
+  39 planted links, every form at the cap, each ancestor stat resolving the
+  chain in the kernel). The cap applies to every form in `forms`, hop forms
+  included — a 97-byte path through one link with a long relative target once
+  grew to 40 KB forms and cost 21 s. `viewsOf` looks at nothing once any path
+  is unresolvable. Do not "optimise" `look` by stopping at the first missing
+  ancestor: existence is not monotone (`/.vol/<dev>` does not stat, while
+  `/.vol/<dev>/<ino>` does — measured), and the `/.vol` anchor would be lost.
+  `ancestors`, `parent` and `child` are the linear substitutes for
+  `filepath.Dir`/`Join`; `TestTheLinearWalksAgreeWithFilepath` pins them to the
+  same strings. Linearity itself is shown by the benchmarks, not a test. Every place's forms and ancestors are
   looked up per call, and nothing is cached, on purpose. The agent controls the
   path, so keep `look` linear: an anchor's `rest` is a shared slice, never
   copied. A prepend per segment once made a 120 KB path cost 14 s, and
