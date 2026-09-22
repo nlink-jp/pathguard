@@ -16,12 +16,12 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
-- Known limits recorded (README, RFP): a `..` climbing out through a credential
-  directory's entry is judged where it lands; `work_dir` validation keeps
-  ADR-022 §4's order; hard links into credential directories and to `.env`;
-  Unicode normalisation of link targets; tests that redirect `HOME` still list
-  the account's real credential directories unless built with `-tags osusergo`;
-  about 2.5 ms per check.
+- Known limits recorded in README and the RFP: a `..` climbing out through a
+  credential directory's entry is judged where it lands; `work_dir` validation
+  keeps ADR-022 §4's order; hard links into credential directories and to
+  `.env`; Unicode normalisation of link targets; about 2 ms per check. README
+  also notes that tests which redirect `HOME` still list the account's real
+  credential directories unless built with `-tags osusergo`.
 
 ## [0.2.0] - 2026-09-22
 

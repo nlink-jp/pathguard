@@ -350,7 +350,7 @@ one had the same cause, so they were fixed at the cause rather than one by one:
   credential directory answers by whether it exists; a hard link to a file inside
   a credential directory or to a `.env` is not refused; a non-ASCII link-target
   name in another normalisation is caught only while it exists; each check
-  prepares the places again (about 2.5 ms). The one fixed then is the end of a
+  prepares the places again (about 2 ms). The one fixed then is the end of a
   walk: `Where` returns it, because the last of `Forms` is not it when a chain of
   links comes back to an earlier spelling.
 

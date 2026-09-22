@@ -34,10 +34,15 @@ func Forms(p string) []string {
 }
 
 // Where returns where p ends — every link on it followed, a dangling one by its
-// target, and the rest joined by name — which for a path that exists is what
-// filepath.EvalSymlinks returns. ok is false when the chain of links does not
-// end, when it cannot be read, or whenever Forms would be refused (a NUL byte,
-// a form past the length bound); end is then "".
+// target, and the rest joined by name — which for an existing absolute path is
+// what filepath.EvalSymlinks returns (a relative path comes back absolute,
+// against the real working directory). ok is false for an empty path, when the
+// chain of links does not end or passes through more than maxHops links, when a
+// link cannot be read, or whenever Forms would be refused (a NUL byte, a form
+// past the length bound); end is then "".
+//
+// Create and open the end, not the path as given: a missing component placed by
+// name can lead somewhere else once it exists.
 //
 // It is the place a path is judged at before anything asks whether a file is
 // there, so that the answer does not depend on it.

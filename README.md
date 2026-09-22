@@ -87,7 +87,9 @@ already produced ends on an earlier one.
 where, ok := pathguard.Where(raw)
 if !ok { /* the chain of links does not end: refuse */ }
 if reason, why := r.LocalPath(raw, where); why != "" { /* refuse */ }
-// only now: does it exist, is it a regular file, ...
+// only now: does it exist, is it a regular file, ... — and create and open
+// where, not raw: a missing component placed by name can lead elsewhere once
+// it exists.
 ```
 
 A call site that holds no `Resolver` uses the package functions, which build
@@ -208,7 +210,7 @@ This is a floor, not a boundary.
   lists the real credential directories, read-only, unless it is built with
   `-tags osusergo`.
 - Every check prepares the places again — it reads the credential directories
-  for their links — about 2.5 ms a check. A call judging hundreds of paths pays
+  for their links — about 2 ms a check. A call judging hundreds of paths pays
   that for each.
 
 ## Documentation
